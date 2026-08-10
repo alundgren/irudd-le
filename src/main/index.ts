@@ -3,6 +3,7 @@ import { config } from './config';
 import { createOverlayWindow } from './overlay-window';
 import { InteractionMode } from './interaction';
 import { registerIpc } from './ipc';
+import { UpdateManager } from './update';
 
 // `--start-interactive` boots straight into interactive mode, handy when you
 // want to poke at the UI without reaching for the shortcut.
@@ -11,6 +12,7 @@ const startInteractive =
 
 let win: BrowserWindow | null = null;
 let mode: InteractionMode | null = null;
+let updater: UpdateManager | null = null;
 
 // One overlay is enough; a second copy would just fight for always-on-top.
 // Say so before exiting -- an instant silent exit is otherwise baffling.
@@ -66,8 +68,10 @@ app.whenReady().then(() => {
 
   win = createOverlayWindow();
   mode = new InteractionMode(win, startInteractive);
-  registerIpc({ win, mode });
+  updater = new UpdateManager(win);
+  registerIpc({ win, mode, updater });
   registerShortcuts();
+  updater.start();
 
   // Re-send the mode once the page is live, so a reload cannot leave the
   // indicator out of sync with reality.
@@ -76,6 +80,8 @@ app.whenReady().then(() => {
   win.on('closed', () => {
     win = null;
     mode = null;
+    updater?.stop();
+    updater = null;
   });
 }).catch((err: unknown) => {
   console.error('[overlay] failed to start:', err);
@@ -84,6 +90,7 @@ app.whenReady().then(() => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  updater?.stop();
 });
 
 // An overlay with no window has no purpose -- quit on all platforms,

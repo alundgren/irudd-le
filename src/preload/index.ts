@@ -33,6 +33,15 @@ const api: OverlayApi = {
       ipcRenderer.removeListener('overlay:mode-changed', listener);
     };
   },
+
+  onUpdateStatusChanged: (handler) => {
+    const listener = (_event: unknown, status: UpdateStatus): void =>
+      handler(status);
+    ipcRenderer.on('update:status-changed', listener);
+    return () => {
+      ipcRenderer.removeListener('update:status-changed', listener);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld('overlay', api);

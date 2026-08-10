@@ -1,7 +1,8 @@
 // Packages the compiled overlay as a Windows x64 version folder, zipped.
 //
-// The zip's top level IS the version folder, so installing is "unzip into the
-// install root" and nothing else -- see docs/adr/0002-versioned-folders-and-self-update.md.
+// The zip's top level is the version folder plus its stable launcher, so
+// installing is "unzip into the install root" and nothing else -- see
+// docs/adr/0002-versioned-folders-and-self-update.md.
 //
 // We package a staging directory rather than the repo root. The app has no
 // runtime dependencies (everything in package.json is a devDependency), so the
@@ -74,10 +75,14 @@ const [built] = await packager({
 // launcher will resolve which one to start.
 const versionFolder = path.join(out, version);
 await rename(built, versionFolder);
+await cp(
+  path.join(root, 'scripts', 'Last Epoch Overlay.vbs'),
+  path.join(out, 'Last Epoch Overlay.vbs')
+);
 
 // `zip` ships with macOS and the Ubuntu runner image, so this stays
 // dependency-free. -r recurse, -q quiet, -X drop extra file attributes.
-const zipped = spawnSync('zip', ['-r', '-q', '-X', path.join(dist, zipName), version], {
+const zipped = spawnSync('zip', ['-r', '-q', '-X', path.join(dist, zipName), version, 'Last Epoch Overlay.vbs'], {
   cwd: out,
   stdio: 'inherit',
 });
@@ -90,4 +95,4 @@ if (zipped.status !== 0) {
 await rm(staging, { recursive: true, force: true });
 
 console.log(`[package-win] dist/${zipName}`);
-console.log(`[package-win] unzips to ${version}/Last Epoch Overlay.exe`);
+console.log(`[package-win] unzips to ${version}/Last Epoch Overlay.exe plus Last Epoch Overlay.vbs`);

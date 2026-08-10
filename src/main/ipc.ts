@@ -1,6 +1,7 @@
 import { app, ipcMain, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 import { config } from './config';
 import type { InteractionMode } from './interaction';
+import type { UpdateManager } from './update';
 
 /**
  * Every channel the renderer can reach, in one place.
@@ -13,9 +14,11 @@ import type { InteractionMode } from './interaction';
 export function registerIpc({
   win,
   mode,
+  updater,
 }: {
   win: BrowserWindow;
   mode: InteractionMode;
+  updater: UpdateManager;
 }): void {
   // Ignore anything that did not come from our own overlay window.
   const fromOverlay = (event: IpcMainEvent | IpcMainInvokeEvent): boolean =>
@@ -31,6 +34,7 @@ export function registerIpc({
       platform: process.platform,
       version: app.getVersion(),
       isDev: !app.isPackaged,
+      updateStatus: updater.state(),
     };
   });
 

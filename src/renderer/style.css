@@ -297,6 +297,26 @@ button {
   color: var(--muted);
 }
 
+.update-status {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.update-status[data-status="downloading"] {
+  color: var(--accent);
+}
+
+/* In source runs this is a harmless acknowledgement, not a check button. */
+.update-status.is-acknowledged {
+  animation: update-status-acknowledged 0.25s ease;
+}
+
+@keyframes update-status-acknowledged {
+  50% {
+    color: var(--live);
+  }
+}
+
 .link-btn {
   background: none;
   border: 0;

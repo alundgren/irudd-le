@@ -177,31 +177,71 @@ Windows executable with `resedit`, a pure-JS PE editor; the widely repeated
 Output is `dist/last-epoch-overlay-<version>-win32-x64.zip` (~138 MB). Config
 lives in `scripts/package-win.mjs`, not in `package.json`.
 
-The zip's **top level is the version folder**:
+The zip's **top level is the stable launcher plus the version folder**:
 
 ```
+Last Epoch Overlay.vbs
 0.1.0/
 ├── Last Epoch Overlay.exe
 ├── resources/app.asar
 └── … Electron runtime files
 ```
 
-So installing is *unzip into the install root*, and nothing else. Later versions
-land as sibling folders next to this one — see
+So installing is *unzip into an install root*, and nothing else. Launch and pin
+`Last Epoch Overlay.vbs`, never the exe in a version folder: it runs the newest
+installed version without showing a console, so the taskbar pin stays valid as
+versions arrive. Later versions land as sibling folders next to this one — see
 [ADR-0002](docs/adr/0002-versioned-folders-and-self-update.md).
 
-### First run on Windows
+### First install on Windows
+
+1. Download `last-epoch-overlay-<version>-win32-x64.zip` from the latest
+   [GitHub release](https://github.com/alundgren/irudd-le/releases/latest).
+2. Create an **install root** that your Windows account can write to, such as
+   `C:\Games\Last Epoch Overlay`. Do not use `Program Files`: self-update needs
+   to add new version folders without an administrator prompt.
+3. Extract the zip's *contents* into that install root. Do not extract it into
+   another version-named folder. The result must look like this:
+
+   ```text
+   C:\Games\Last Epoch Overlay\
+   ├── Last Epoch Overlay.vbs
+   └── 0.1.0\
+       └── Last Epoch Overlay.exe
+   ```
+
+4. Open `Last Epoch Overlay.vbs`. It starts the newest installed version and
+   exits without a console window. If you want taskbar access, create a shortcut
+   to this `.vbs` file and pin that shortcut — do not pin a version-folder exe.
 
 Releases are **unsigned**, so Windows SmartScreen blocks the first launch with
 *"Windows protected your PC"*. Click **More info** → **Run anyway**. It appears
 once per new executable. Signing would mean putting a certificate wherever the
 build runs; see [ADR-0001](docs/adr/0001-packager-zip-and-ci-cross-build.md).
 
-The build cannot smoke-test itself — a macOS (or Linux) machine cannot launch a
-Windows exe. *"It built"* does not mean *"it runs"*.
+The Windows x64 output was smoke-tested on the real Windows machine. A macOS
+(or Linux) build still cannot launch the exe itself.
 
-There is deliberately **no telemetry**. Self-update is in progress
-([#7](https://github.com/alundgren/irudd-le/issues/7)).
+There is deliberately **no telemetry**. A running installation checks the
+ordinary GitHub release metadata once a minute. When a newer version appears,
+it downloads the zip, verifies its published SHA-256, extracts a sibling
+version folder, and relaunches through the pinned launcher. The small status in
+the overlay is informational only: `idle` or `downloading`. Source runs have no
+install root, so clicking that indicator simply acknowledges the click locally
+and never makes a network request.
+
+### Publishing a release
+
+The manually dispatched [release workflow](.github/workflows/release.yml)
+cross-builds Windows x64 on Linux from the frozen lockfile, then publishes a
+normal (not prerelease) GitHub release. It uploads the zip and
+`last-epoch-overlay-update.json`; the latter contains the release version,
+SHA-256, and immutable asset URL. Installations only fetch that metadata through
+`releases/latest/download/last-epoch-overlay-update.json`, never the GitHub API.
+
+For the whole release loop, invoke `$release-overlay`. It bumps the patch
+version, commits and pushes it, dispatches the workflow, waits for publication,
+and reports the live release.
 
 ---
 
