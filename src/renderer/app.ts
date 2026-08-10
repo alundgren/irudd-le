@@ -4,6 +4,8 @@
  * renderer tsconfig omits Node types so that stays true by construction.
  */
 
+import { initControllerPoc } from './controller-poc';
+
 interface PlannerNode {
   name: string;
   desc: string;
@@ -83,7 +85,7 @@ const NOTES: string[] = [
 // --- Helpers ---------------------------------------------------------------
 
 /** Every id below is in index.html, so a miss is a bug worth throwing on. */
-function must<T extends Element = HTMLElement>(id: string): T {
+export function must<T extends Element = HTMLElement>(id: string): T {
   const el = document.getElementById(id);
   if (!el) throw new Error(`[overlay] missing #${id} in index.html`);
   return el as unknown as T;
@@ -215,6 +217,7 @@ async function init(): Promise<void> {
   applyMode(state);
   applyUpdateStatus(state.updateStatus);
   wireUpdateIndicator(state.isDev);
+  initControllerPoc(state.controllerBridge);
   must('hint').textContent = `${state.shortcuts.toggleInteractive} toggles`;
 }
 

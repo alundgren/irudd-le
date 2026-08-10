@@ -21,6 +21,8 @@ const api: OverlayApi = {
 
   quit: () => ipcRenderer.send('overlay:quit'),
 
+  moveBy: (dx, dy) => ipcRenderer.send('overlay:move-by', dx, dy),
+
   /**
    * Fired whenever click-through mode changes, from any source (shortcut, UI,
    * unhide).
@@ -40,6 +42,15 @@ const api: OverlayApi = {
     ipcRenderer.on('update:status-changed', listener);
     return () => {
       ipcRenderer.removeListener('update:status-changed', listener);
+    };
+  },
+
+  onControllerReading: (handler) => {
+    const listener = (_event: unknown, reading: ControllerReading): void =>
+      handler(reading);
+    ipcRenderer.on('controller:reading', listener);
+    return () => {
+      ipcRenderer.removeListener('controller:reading', listener);
     };
   },
 };
