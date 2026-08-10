@@ -10,4 +10,4 @@ Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root (created lazi
 
 ### Releases
 
-Publish a patch release only through `skills/release-overlay/SKILL.md`.
+Publish a patch release only through the `release-overlay` skill.

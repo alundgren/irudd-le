@@ -239,9 +239,10 @@ normal (not prerelease) GitHub release. It uploads the zip and
 SHA-256, and immutable asset URL. Installations only fetch that metadata through
 `releases/latest/download/last-epoch-overlay-update.json`, never the GitHub API.
 
-For the whole release loop, invoke `$release-overlay`. It bumps the patch
-version, commits and pushes it, dispatches the workflow, waits for publication,
-and reports the live release.
+For the whole release loop, invoke `$release-overlay` in Codex or
+`/release-overlay` in Claude Code. It bumps the patch version, commits and
+pushes it, dispatches the workflow, waits for publication, and reports the live
+release.
 
 ---
 
