@@ -1,6 +1,6 @@
 {
   "name": "last-epoch-overlay",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Transparent always-on-top overlay for Last Epoch",
   "private": true,
   "main": "build/main/index.js",
