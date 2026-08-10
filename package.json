@@ -15,40 +15,13 @@
     "start:interactive": "pnpm compile && electron . --start-interactive",
     "dev": "nodemon --quiet --watch src --ext ts,html,css --exec \"pnpm compile && electron .\"",
     "clean": "node -e \"require('node:fs').rmSync('build',{recursive:true,force:true})\"",
-    "build": "pnpm compile && electron-builder",
-    "build:win": "pnpm compile && electron-builder --win",
-    "build:mac": "pnpm compile && electron-builder --mac"
+    "package:win": "pnpm compile && node scripts/package-win.mjs"
   },
   "devDependencies": {
+    "@electron/packager": "^20.2.0",
     "@types/node": "^22.20.1",
     "electron": "^43.3.0",
-    "electron-builder": "^26.15.3",
     "nodemon": "^3.1.14",
     "typescript": "^5.9.3"
-  },
-  "build": {
-    "appId": "com.irudd.lastepochoverlay",
-    "productName": "Last Epoch Overlay",
-    "files": [
-      "build/**/*",
-      "package.json"
-    ],
-    "directories": {
-      "output": "dist",
-      "buildResources": "build-resources"
-    },
-    "win": {
-      "target": [
-        "nsis",
-        "portable"
-      ]
-    },
-    "mac": {
-      "target": "dmg",
-      "category": "public.app-category.utilities",
-      "identity": "-",
-      "entitlements": "build-resources/entitlements.mac.plist",
-      "entitlementsInherit": "build-resources/entitlements.mac.plist"
-    }
   }
 }

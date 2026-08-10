@@ -50,7 +50,7 @@ While interactive you can also **drag the title bar** to move the overlay.
 | `pnpm start:interactive` | Same, but boots straight into interactive mode |
 | `pnpm compile` | TypeScript → `build/`, plus copy HTML/CSS |
 | `pnpm typecheck` | Type-check both projects without emitting |
-| `pnpm build` | Package the app (see [Building](#building)) |
+| `pnpm package:win` | Package a Windows zip (see [Building](#building)) |
 | `pnpm clean` | Delete `build/` |
 
 ---
@@ -143,59 +143,65 @@ payloads and the `window.overlay` API. Being ambient, it emits no JavaScript and
 needs no imports, while `pnpm typecheck` still catches preload and renderer
 drifting apart.
 
-**pnpm.** `node-linker=hoisted` is set in `.npmrc` because electron-builder walks
-`node_modules` directly and trips over pnpm's default symlinked layout.
+**pnpm.** `node-linker=hoisted` is set in `.npmrc`. Packaging no longer depends
+on it — `scripts/package-win.mjs` stages the app without `node_modules` — but
+tooling that walks `node_modules` directly still behaves better this way.
 
 **No framework in the UI.** Panels are plain DOM behind a tab strip, so adding a
 chat panel (v2) or a live suggestions panel (v3) means adding a `<section>` — no
 layout to fight. The `Ask` and `Vision` tabs are already there, disabled, as
 placeholders.
 
-**electron-builder** over Forge: less configuration for what we need (Windows
-NSIS + portable from a few lines of `package.json`), and no plugin layer to
-learn since there's no bundler to integrate.
+**`@electron/packager` over electron-builder and Forge.** The overlay is
+maintained by one person who cannot watch its dependency tree, so the tree is
+the attack surface — and electron-builder was most of it (281 transitive
+packages against packager's 48). Packager also produces a plain app directory
+rather than an installer, which is exactly what the update model wants. See
+[ADR-0001](docs/adr/0001-packager-zip-and-ci-cross-build.md).
 
 ---
 
 ## Building
 
+**Windows x64 is the only packaging target.** macOS is a development
+environment, not something we ship.
+
 ```bash
-pnpm build        # current platform
-pnpm build:win    # Windows: NSIS installer + portable .exe
-pnpm build:mac    # macOS: .dmg
+pnpm package:win
 ```
 
-Output lands in `dist/`. Config is the `build` block in `package.json`.
+This cross-builds from macOS — no Wine needed. `@electron/packager@20` edits the
+Windows executable with `resedit`, a pure-JS PE editor; the widely repeated
+"you need Wine on macOS" advice describes electron-packager v12 and is obsolete.
 
-Note that `directories.buildResources` is set to `build-resources/`, because
-electron-builder defaults it to `build/` — which is where our compiled
-TypeScript goes.
+Output is `dist/last-epoch-overlay-<version>-win32-x64.zip` (~138 MB). Config
+lives in `scripts/package-win.mjs`, not in `package.json`.
 
-### Status of each target
+The zip's **top level is the version folder**:
 
-- **Windows (`pnpm build:win`) — not yet run.** The config is standard NSIS +
-  portable, but this project has so far only been developed on macOS.
-  Cross-building Windows from macOS needs Wine; build on Windows (or CI).
-- **macOS (`pnpm build:mac`) — packages successfully, but the resulting `.app`
-  does not launch on this machine.** It exits immediately with status 0. Known
-  and understood so far:
-  - It is **not** an app-code problem. Running the packaged bundle's own
-    `app.asar` under the dev Electron binary works perfectly:
-    ```bash
-    env -u ELECTRON_RUN_AS_NODE ./node_modules/.bin/electron \
-      "dist/mac-arm64/Last Epoch Overlay.app/Contents/Resources/app.asar"
-    ```
-  - The build is **ad-hoc signed** (`mac.identity: "-"`), since this machine has
-    no Developer ID. The required hardened-runtime entitlements *are* applied —
-    verify with `codesign -d --entitlements - "dist/mac-arm64/Last Epoch Overlay.app"`.
-  - Next thing to try is signing with a real Developer ID identity (drop the
-    `"identity": "-"` line) before digging further.
+```
+0.1.0/
+├── Last Epoch Overlay.exe
+├── resources/app.asar
+└── … Electron runtime files
+```
 
-  Because macOS is only the development target here, **use `pnpm dev` or
-  `pnpm start` on this machine** — those are fully working. Packaging matters for
-  Windows, which is where the overlay is actually used.
+So installing is *unzip into the install root*, and nothing else. Later versions
+land as sibling folders next to this one — see
+[ADR-0002](docs/adr/0002-versioned-folders-and-self-update.md).
 
-There is deliberately **no auto-update and no telemetry**.
+### First run on Windows
+
+Releases are **unsigned**, so Windows SmartScreen blocks the first launch with
+*"Windows protected your PC"*. Click **More info** → **Run anyway**. It appears
+once per new executable. Signing would mean putting a certificate wherever the
+build runs; see [ADR-0001](docs/adr/0001-packager-zip-and-ci-cross-build.md).
+
+The build cannot smoke-test itself — a macOS (or Linux) machine cannot launch a
+Windows exe. *"It built"* does not mean *"it runs"*.
+
+There is deliberately **no telemetry**. Self-update is in progress
+([#7](https://github.com/alundgren/irudd-le/issues/7)).
 
 ---
 
@@ -205,8 +211,7 @@ macOS is the development/testing target here; Windows is where it actually gets
 used. Every v1 behaviour was verified working on macOS (Apple silicon, Electron
 43) when run via `pnpm dev` / `pnpm start`: transparency, always-on-top, corner
 placement, both interaction modes and their indicators, scrolling and typing.
-(The *packaged* `.app` is a separate, still-open issue — see
-[Building](#building).) Some specifics:
+There is no macOS package — run it from source here. Some specifics:
 
 - **Always-on-top level matters.** `setAlwaysOnTop(true, 'screen-saver')` plus
   `setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })` is what makes
