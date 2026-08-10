@@ -1,0 +1,9 @@
+{
+  "name": "gameinput-bridge",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Windows-only N-API addon: reads the Xbox controller via GameInput while Last Epoch keeps focus.",
+  "scripts": {
+    "build": "echo Run node-gyp rebuild directly -- see README.md for the exact Electron-targeted command"
+  }
+}

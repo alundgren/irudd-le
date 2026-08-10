@@ -4,3 +4,8 @@ dist/
 out/
 *.log
 .DS_Store
+
+# Compiled native addon and the third-party GameInput SDK it links against --
+# built by hand on the Windows PC, per native/gameinput-bridge/README.md.
+native/gameinput-bridge/build/
+native/gameinput-bridge/vendor/

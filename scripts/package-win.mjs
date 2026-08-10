@@ -12,6 +12,7 @@
 // picture.
 
 import { rm, mkdir, cp, writeFile, rename, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +38,26 @@ await rm(dist, { recursive: true, force: true });
 await mkdir(staging, { recursive: true });
 
 await cp(path.join(root, 'build'), path.join(staging, 'build'), { recursive: true });
+
+// The GameInput bridge (issue #18) is a native addon compiled by hand on a
+// Windows PC (see native/gameinput-bridge/README.md), not by this script. If
+// it hasn't been built yet, package without it -- controller-bridge.ts
+// already falls back to 'unavailable' when the .node file is missing.
+const nativeAddon = path.join(
+  root, 'native', 'gameinput-bridge', 'build', 'Release', 'gameinput_bridge.node'
+);
+const hasNativeAddon = existsSync(nativeAddon);
+if (hasNativeAddon) {
+  const nativeDest = path.join(staging, 'native', 'gameinput-bridge', 'build', 'Release');
+  await mkdir(nativeDest, { recursive: true });
+  await cp(nativeAddon, path.join(nativeDest, 'gameinput_bridge.node'));
+} else {
+  console.warn(
+    '[package-win] native/gameinput-bridge addon not built -- packaging without the ' +
+      'controller bridge (see native/gameinput-bridge/README.md)'
+  );
+}
+
 await writeFile(
   path.join(staging, 'package.json'),
   JSON.stringify(
@@ -63,7 +84,10 @@ const [built] = await packager({
   appVersion: version,
   prune: false,
   overwrite: true,
-  asar: true,
+  // .node files can't be require()'d from inside an asar archive, so the
+  // addon (when present) is unpacked next to it, per Electron's native
+  // module guidance.
+  asar: hasNativeAddon ? { unpack: '**/*.node' } : true,
   win32metadata: {
     CompanyName: pkg.author,
     FileDescription: pkg.description,
