@@ -23,6 +23,7 @@
       <nav class="tabs" id="tabs">
         <button class="tab is-active" data-panel="build">Build</button>
         <button class="tab" data-panel="notes">Notes</button>
+        <button class="tab" data-panel="controller">Controller</button>
         <button class="tab" data-panel="ask" disabled title="Coming in v2">
           Ask
         </button>
@@ -60,6 +61,23 @@
               placeholder="Type here to test typing…"
             />
           </label>
+        </section>
+
+        <section class="panel" data-panel="controller">
+          <p class="stub">
+            Prototype — see
+            docs/research/xbox-controller-overlay-feasibility.md. Hold LB+RB
+            and move the left stick to drag the overlay without focusing it.
+          </p>
+          <div class="summary">
+            <div class="summary-row">
+              <span>Controller</span><strong id="controller-status">no controller</strong>
+            </div>
+            <div class="summary-row">
+              <span>Move mode</span><strong id="controller-move">off</strong>
+            </div>
+          </div>
+          <ul class="notes" id="controller-log"></ul>
         </section>
 
         <section class="panel" data-panel="ask">

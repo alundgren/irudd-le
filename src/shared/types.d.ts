@@ -39,6 +39,12 @@ interface OverlayApi {
   setInteractive(interactive: boolean): Promise<OverlayState | null>;
   toggleInteractive(): Promise<OverlayState | null>;
   quit(): void;
+  /**
+   * Nudges the window by a pixel delta without focusing it. Fire-and-forget:
+   * used by the controller-input prototype (see controller-poc.ts) to drag
+   * the overlay from a gamepad left stick.
+   */
+  moveBy(dx: number, dy: number): void;
   /** Returns an unsubscribe function. */
   onModeChanged(handler: (state: OverlayState) => void): () => void;
   /** Returns an unsubscribe function. */

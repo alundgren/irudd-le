@@ -21,6 +21,8 @@ const api: OverlayApi = {
 
   quit: () => ipcRenderer.send('overlay:quit'),
 
+  moveBy: (dx, dy) => ipcRenderer.send('overlay:move-by', dx, dy),
+
   /**
    * Fired whenever click-through mode changes, from any source (shortcut, UI,
    * unhide).

@@ -1,4 +1,4 @@
-import { app, ipcMain, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
+import { app, ipcMain, screen, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 import { config } from './config';
 import type { InteractionMode } from './interaction';
 import type { UpdateManager } from './update';
@@ -56,5 +56,25 @@ export function registerIpc({
   ipcMain.on('overlay:quit', (event) => {
     if (!fromOverlay(event)) return;
     app.quit();
+  });
+
+  // Controller-input prototype: moves the window without ever calling
+  // win.focus(), matching the "read, don't activate" design in
+  // docs/research/xbox-controller-overlay-feasibility.md.
+  ipcMain.on('overlay:move-by', (event, dx: unknown, dy: unknown) => {
+    if (!fromOverlay(event)) return;
+    if (typeof dx !== 'number' || typeof dy !== 'number') return;
+
+    const [x = 0, y = 0] = win.getPosition();
+    const [width = 0, height = 0] = win.getSize();
+    const { workArea } = screen.getDisplayMatching({ x, y, width, height });
+
+    const clamp = (value: number, min: number, max: number): number =>
+      Math.min(Math.max(value, min), max);
+
+    win.setPosition(
+      Math.round(clamp(x + dx, workArea.x, workArea.x + workArea.width - width)),
+      Math.round(clamp(y + dy, workArea.y, workArea.y + workArea.height - height))
+    );
   });
 }
