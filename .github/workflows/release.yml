@@ -1,0 +1,46 @@
+name: Release Windows overlay
+
+on:
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out the requested revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Package Windows x64
+        run: pnpm package:win
+
+      - name: Publish the ordinary release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v${VERSION}"
+          ZIP="dist/last-epoch-overlay-${VERSION}-win32-x64.zip"
+          ZIP_NAME="$(basename "$ZIP")"
+          SHA256="$(sha256sum "$ZIP" | awk '{print $1}')"
+          ASSET_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ZIP_NAME}"
+          METADATA="dist/last-epoch-overlay-update.json"
+
+          node -e '
+            const [version, sha256, url, output] = process.argv.slice(1);
+            require("node:fs").writeFileSync(
+              output,
+              JSON.stringify({ version, sha256, url }, null, 2) + "\n"
+            );
+          ' "$VERSION" "$SHA256" "$ASSET_URL" "$METADATA"
+
+          gh release create "$TAG" "$ZIP" "$METADATA" \
+            --title "$TAG" \
+            --generate-notes

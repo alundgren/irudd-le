@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Overlay"
+  short_description: "Publish the next overlay patch release"
+  default_prompt: "Use $release-overlay to publish the next patch release."

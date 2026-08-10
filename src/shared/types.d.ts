@@ -21,12 +21,16 @@ interface OverlayState {
   interactive: boolean;
 }
 
+/** The updater is deliberately informational: couch distance leaves no action. */
+type UpdateStatus = 'idle' | 'downloading';
+
 /** State plus the read-only facts the UI wants at boot. */
 interface OverlayInfo extends OverlayState {
   shortcuts: OverlayShortcuts;
   platform: string;
   version: string;
   isDev: boolean;
+  updateStatus: UpdateStatus;
 }
 
 /** Exactly what `window.overlay` offers. Mirrored in src/preload/index.ts. */
@@ -37,6 +41,8 @@ interface OverlayApi {
   quit(): void;
   /** Returns an unsubscribe function. */
   onModeChanged(handler: (state: OverlayState) => void): () => void;
+  /** Returns an unsubscribe function. */
+  onUpdateStatusChanged(handler: (status: UpdateStatus) => void): () => void;
 }
 
 interface Window {

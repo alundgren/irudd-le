@@ -169,6 +169,12 @@ function applyMode(state: OverlayState): void {
     : 'click-through';
 }
 
+function applyUpdateStatus(status: UpdateStatus): void {
+  const indicator = must('update-status');
+  indicator.dataset.status = status;
+  indicator.textContent = `update: ${status}`;
+}
+
 function wireControls(): void {
   must('passthrough-btn').addEventListener('click', () => {
     void window.overlay.setInteractive(false);
@@ -176,6 +182,19 @@ function wireControls(): void {
 
   must('quit-btn').addEventListener('click', () => {
     window.overlay.quit();
+  });
+}
+
+function wireUpdateIndicator(isDev: boolean): void {
+  const indicator = must('update-status');
+  indicator.addEventListener('click', () => {
+    // Source runs have no install root and therefore cannot update. Keep this
+    // acknowledgement local: it proves the indicator is wired without making
+    // a network request or turning it into an update control.
+    if (!isDev) return;
+    indicator.classList.remove('is-acknowledged');
+    void indicator.offsetWidth;
+    indicator.classList.add('is-acknowledged');
   });
 }
 
@@ -188,11 +207,14 @@ async function init(): Promise<void> {
   wireControls();
 
   window.overlay.onModeChanged(applyMode);
+  window.overlay.onUpdateStatusChanged(applyUpdateStatus);
 
   const state = await window.overlay.getState();
   if (!state) return;
 
   applyMode(state);
+  applyUpdateStatus(state.updateStatus);
+  wireUpdateIndicator(state.isDev);
   must('hint').textContent = `${state.shortcuts.toggleInteractive} toggles`;
 }
 
