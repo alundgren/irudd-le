@@ -31,7 +31,9 @@ Function NewestVersionFolder(root)
   For Each folder In fileSystem.GetFolder(root).SubFolders
     If IsVersion(folder.Name) Then
       If fileSystem.FileExists(fileSystem.BuildPath(folder.Path, APP_EXE)) Then
-        If candidate = "" Or CompareVersions(folder.Name, fileSystem.GetFileName(candidate)) > 0 Then
+        If candidate = "" Then
+          candidate = folder.Path
+        ElseIf CompareVersions(folder.Name, fileSystem.GetFileName(candidate)) > 0 Then
           candidate = folder.Path
         End If
       End If
@@ -43,8 +45,15 @@ End Function
 
 Function IsVersion(value)
   Dim parts
+  IsVersion = False
   parts = Split(value, ".")
-  IsVersion = UBound(parts) = 2 And IsNumeric(parts(0)) And IsNumeric(parts(1)) And IsNumeric(parts(2))
+
+  If UBound(parts) <> 2 Then Exit Function
+  If Not IsNumeric(parts(0)) Then Exit Function
+  If Not IsNumeric(parts(1)) Then Exit Function
+  If Not IsNumeric(parts(2)) Then Exit Function
+
+  IsVersion = True
 End Function
 
 Function CompareVersions(left, right)
