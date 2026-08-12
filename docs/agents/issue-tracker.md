@@ -13,6 +13,53 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
 
+## What to work on next
+
+Issues are the source of truth. Work order is derived, never hand-maintained:
+
+- **Hierarchy** is GitHub sub-issues. Every issue belonging to an epic is nested under it, directly or transitively.
+- **Order** is GitHub's native issue dependencies (`blocked_by`). An issue is ready when it has no _open_ blockers.
+- **Containers** carry the `epic` label and are not worked directly.
+
+The ready list — open, unblocked, unclaimed, excluding containers:
+
+```sh
+gh api --paginate "repos/{owner}/{repo}/issues?state=open&per_page=100" \
+  --jq '.[] | select(.pull_request == null)
+        | select(.issue_dependencies_summary.blocked_by == 0)
+        | select(.assignee == null)
+        | select([.labels[].name] | index("epic") | not)
+        | "#\(.number)\t\(.title)"'
+```
+
+`issue_dependencies_summary.blocked_by` counts only open blockers, so the list re-derives itself as issues close. Claim with `gh issue edit <n> --add-assignee @me`, which drops it from the ready list.
+
+To see the tree instead of the flat list, open the epic, or filter the issues tab with `no:parent-issue` for top-level issues only. Sub-issues always remain in the main issue list; nesting is a relationship, not a move.
+
+## Project board
+
+Project **1**, `Last Epoch Overlay` (user-owned, linked to this repo): <https://github.com/users/alundgren/projects/1>
+
+The board tracks one thing only — `Status` (`Todo` / `In Progress` / `Done`). Hierarchy and ordering stay on the issues; the board does not duplicate them. Projects cannot filter on `blocked_by`, so readiness always comes from the query above, never from a board column.
+
+```sh
+# Board state
+gh project item-list 1 --owner alundgren --format json \
+  --jq '.items[] | "\(.status // "none")\t#\(.content.number)\t\(.title)"'
+
+# Move an issue (find its item id in the listing above)
+gh project item-edit --id <item-id> --project-id PVT_kwHOAAbLO84BgIJz \
+  --field-id PVTSSF_lAHOAAbLO84BgIJzzhaWE1I --single-select-option-id <option-id>
+
+# Option ids
+gh project field-list 1 --owner alundgren --format json \
+  --jq '.fields[] | select(.name=="Status") | .options[] | "\(.name)\t\(.id)"'
+```
+
+New issues are **not** added automatically — `gh project` has no workflow command, so either add them with `gh project item-add 1 --owner alundgren --url <issue-url>` or enable the built-in auto-add workflow once in the project's UI settings.
+
+Agents should prefer plain `gh issue` / `gh api` for anything except `Status`; the board is a view for the human, not a source of truth.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
