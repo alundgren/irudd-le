@@ -78,6 +78,21 @@ function arrayOfStrings(value: unknown, path: string): string[] {
   return value.map((item, index) => string(item, `${path}[${index}]`));
 }
 
+/**
+ * Channel identifiers end up in URL paths, container volume paths, and overlay
+ * enrollment codes, so they are restricted to a lowercase slug. A channel's
+ * human-readable `name` stays free-form.
+ */
+const CHANNEL_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+function channelId(value: unknown, path: string): string {
+  const parsed = string(value, path);
+  if (!CHANNEL_ID.test(parsed)) {
+    throw invalid(path, 'must be a lowercase slug of 1-64 characters (a-z, 0-9, -) starting with a letter or digit');
+  }
+  return parsed;
+}
+
 function invalid(path: string, message: string): ProtocolValidationError {
   return new ProtocolValidationError('invalid_protocol_value', path, `${path} ${message}`);
 }
@@ -101,7 +116,7 @@ export interface Channel {
 
 export const channelSchema = schema<Channel>((value) => {
   const input = record(value, 'channel');
-  return { protocolVersion: protocolVersionSchema.parse(input.protocolVersion), id: string(input.id, 'channel.id'), name: string(input.name, 'channel.name') };
+  return { protocolVersion: protocolVersionSchema.parse(input.protocolVersion), id: channelId(input.id, 'channel.id'), name: string(input.name, 'channel.name') };
 });
 
 export interface TargetProfile {
@@ -156,7 +171,7 @@ export const revisionSchema = schema<Revision>((value) => {
   const input = record(value, 'revision');
   return {
     id: string(input.id, 'revision.id'),
-    channel: string(input.channel, 'revision.channel'),
+    channel: channelId(input.channel, 'revision.channel'),
     profileVersion: integer(input.profileVersion, 'revision.profileVersion', 1),
     protocolVersion: protocolVersionSchema.parse(input.protocolVersion),
     html: string(input.html, 'revision.html'),
@@ -230,7 +245,7 @@ export const protocolEnvelopeSchema = schema<ProtocolEnvelope>((value) => {
   const input = record(value, 'envelope');
   return {
     protocolVersion: protocolVersionSchema.parse(input.protocolVersion),
-    channel: string(input.channel, 'channel'),
+    channel: channelId(input.channel, 'channel'),
     payload: record(input.payload, 'payload'),
   };
 });

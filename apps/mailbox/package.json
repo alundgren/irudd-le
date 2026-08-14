@@ -1,16 +1,21 @@
 {
   "name": "@irudd-le/mailbox",
   "version": "0.1.0",
-  "description": "Reserved boundary for the durable mailbox service (#34)",
+  "description": "Durable SQLite-backed mailbox and canonical HTTP API for the content shell (#34)",
   "private": true,
   "main": "./build/index.js",
   "types": "./build/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.json",
+    "typecheck": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.json --noEmit",
+    "test": "corepack pnpm build && node --test build/mailbox.test.js",
+    "start": "corepack pnpm build && node build/index.js"
   },
   "dependencies": {
     "@irudd-le/protocol": "workspace:*"
   },
-  "devDependencies": { "typescript": "^5.9.3" }
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.9.3"
+  }
 }
