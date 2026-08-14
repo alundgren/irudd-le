@@ -2,8 +2,10 @@
   // Renderer: a browser, so ES modules and DOM types -- and deliberately no
   // Node types, which is a compile-time reminder that the UI only reaches the
   // main process through the preload bridge.
-  "extends": "./tsconfig.base.json",
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./build",
     "module": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": []

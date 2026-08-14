@@ -2,8 +2,6 @@
   "compilerOptions": {
     "target": "ES2022",
     "moduleResolution": "node",
-    "rootDir": "src",
-    "outDir": "build",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,

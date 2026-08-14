@@ -1,7 +1,9 @@
 {
   // Main + preload: run in Node/Electron, so CommonJS output and Node types.
-  "extends": "./tsconfig.base.json",
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./build",
     "module": "CommonJS",
     "lib": ["ES2022"],
     "types": ["node"]

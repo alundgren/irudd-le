@@ -25,13 +25,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="$(node -p "require('./package.json').version")"
+          VERSION="$(node -p "require('./apps/overlay/package.json').version")"
           TAG="v${VERSION}"
-          ZIP="dist/last-epoch-overlay-${VERSION}-win32-x64.zip"
+          ZIP="apps/overlay/dist/last-epoch-overlay-${VERSION}-win32-x64.zip"
           ZIP_NAME="$(basename "$ZIP")"
           SHA256="$(sha256sum "$ZIP" | awk '{print $1}')"
           ASSET_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ZIP_NAME}"
-          METADATA="dist/last-epoch-overlay-update.json"
+          METADATA="apps/overlay/dist/last-epoch-overlay-update.json"
 
           node -e '
             const [version, sha256, url, output] = process.argv.slice(1);

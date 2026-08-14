@@ -1,3 +1,7 @@
+packages:
+  - apps/*
+  - packages/*
+
 # pnpm 10+ blocks postinstall scripts unless a package is allowed here.
 # Electron's postinstall is what downloads the actual Electron binary from
 # electronjs.org, so without this the app cannot start at all.

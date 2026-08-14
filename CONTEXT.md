@@ -1,63 +1,62 @@
 # irudd-le
 
-A transparent, always-on-top desktop overlay for Last Epoch. The player runs the
-game on a Windows desktop that is screen-duplicated to a TV, so the overlay is
-usually read from across the room rather than operated up close.
+irudd-le is a passive **overlay** for Last Epoch. A player reads it at **couch
+distance** beside the running game; normal operation never requires mouse or
+keyboard input. A durable mailbox owns named channels and revisions. Clients
+publish static HTML to a channel, and one enrolled overlay target displays its
+latest valid revision.
 
-## Language
+## Ubiquitous language
 
-### The overlay
+**Overlay**: the always-on-top Electron window beside the running game. Avoid:
+HUD, widget, panel.
 
-**Overlay**:
-The always-on-top window that displays reference content beside the running
-game.
-_Avoid_: HUD, widget, panel
+**Content shell**: the passive overlay plus its scriptless rendering boundary.
+It displays an active revision but does not own publication state.
 
-**Click-through**:
-The overlay state in which mouse input passes to whatever is underneath.
-_Avoid_: pass-through, transparent-to-input
+**Mailbox**: the durable, networked authority for channels, revisions, assets,
+targets, and render observations. It is not an overlay controller.
 
-**Interactive**:
-The overlay state in which the overlay itself receives mouse and keyboard input.
-_Avoid_: focused, active
+**Channel**: a stable, named publication destination with one live overlay
+target. It remains meaningful while its target is offline.
 
-**Couch distance**:
-The operating assumption that the player is watching the TV without a mouse or
-keyboard in reach. Anything the overlay requires a click for is unavailable at
-couch distance.
-_Avoid_: TV mode, lean-back
+**Target**: an enrolled overlay instance. Its **target profile** describes the
+locked content box and capabilities used to compose a fitting document.
 
-### Delivery
+**Revision**: an immutable published HTML document plus its profile version and
+asset dependencies. A new publication activates atomically or leaves the prior
+revision visible.
 
-**Release**:
-A published, versioned build of the overlay that a running installation can
-discover and move to. Every release is a real version; there is no rolling or
-mutable release.
-_Avoid_: build, drop, tag
+**Render status**: a target's observation of the candidate/current revision,
+dimensions, overflow, and activation result.
 
-**Install root**:
-The single directory on the player's machine that holds every installed version
-of the overlay.
-_Avoid_: install dir, app folder
+**Protocol**: the shared, runtime-validated contract. An unsupported protocol
+version fails explicitly; adapters reuse it and do not reproduce its types.
 
-**Version folder**:
-One installed version inside the install root. Version folders are never
-modified in place — a new version arrives as a new folder alongside the old
-ones.
-_Avoid_: install, copy
+**Couch distance**: the operating assumption that the player cannot reach a
+mouse or keyboard. Avoid: TV mode, lean-back.
 
-**Launcher**:
-The one entry point inside the install root that the player starts. It resolves
-which version folder is current and runs it, so that a pinned shortcut never
-goes stale as versions come and go.
-_Avoid_: stub, shim, bootstrapper
+**Click-through**: the window state where mouse input passes beneath the
+overlay. **Interactive** is reserved for deliberate local setup/recovery, not
+ordinary content consumption.
 
-**Update check**:
-The overlay asking whether a release newer than the running version exists.
-_Avoid_: poll, ping, version check
+**Release**, **install root**, **version folder**, **launcher**, **update
+check**, and **self-update** keep the meanings recorded in ADR-0002. Version
+folders are never modified in place.
 
-**Self-update**:
-The overlay acting on an update check without the player doing anything —
-acquiring the newer release as a new version folder and restarting into it.
-Self-update is the only update path, because the player is at couch distance.
-_Avoid_: auto-update, upgrade
+## Boundaries
+
+- `packages/protocol`: versioned runtime schemas and all shared protocol types.
+- `apps/overlay`: Electron content shell, preload security boundary, packaging,
+  launcher, setup/recovery shortcuts, and self-update.
+- `apps/mailbox`: future durable HTTP authority.
+- `apps/upload-ui`: future universal direct-publish UI.
+- `packages/cli` and `packages/mcp`: future thin protocol clients/adapters.
+
+The mailbox HTTP API is canonical. The upload UI, CLI, and stateless MCP
+adapter do not own business state. Static HTML/CSS is trusted for presentation
+inside a sandbox; published script and navigation never run.
+
+The previous controller-driven and placeholder-planner direction is
+superseded. `docs/research/xbox-controller-overlay-feasibility.md` remains as
+historical research, not a product roadmap.

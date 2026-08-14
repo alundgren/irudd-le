@@ -26,6 +26,7 @@ type UpdateStatus = 'idle' | 'downloading';
 
 /** State plus the read-only facts the UI wants at boot. */
 interface OverlayInfo extends OverlayState {
+  protocolVersion: number;
   shortcuts: OverlayShortcuts;
   platform: string;
   version: string;

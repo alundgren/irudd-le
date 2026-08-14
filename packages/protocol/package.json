@@ -1,0 +1,25 @@
+{
+  "name": "@irudd-le/protocol",
+  "version": "1.0.0",
+  "description": "Runtime-validated shared protocol for the content shell",
+  "private": true,
+  "main": "./build/index.js",
+  "module": "./build/esm/index.mjs",
+  "types": "./build/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "import": "./build/esm/index.mjs",
+      "require": "./build/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json && node scripts/rename-esm.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "corepack pnpm build && node --test build/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.9.3"
+  }
+}
