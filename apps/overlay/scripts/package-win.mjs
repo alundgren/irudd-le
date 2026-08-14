@@ -17,26 +17,26 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { packager } from '@electron/packager';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const dist = path.join(root, 'dist');
+const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const dist = path.join(appRoot, 'dist');
 const staging = path.join(dist, 'staging');
 const out = path.join(dist, 'out');
 
-const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+const pkg = JSON.parse(await readFile(path.join(appRoot, 'package.json'), 'utf8'));
 
 // Packager reads the Electron version from the packaged dir's devDependencies,
 // and the staging dir deliberately has none. Take it from what is installed.
 const electronPkg = JSON.parse(
-  await readFile(path.join(root, 'node_modules', 'electron', 'package.json'), 'utf8')
+  await readFile(path.join(appRoot, 'node_modules', 'electron', 'package.json'), 'utf8')
 );
 
 const version = pkg.version;
-const zipName = `${pkg.name}-${version}-win32-x64.zip`;
+const zipName = `last-epoch-overlay-${version}-win32-x64.zip`;
 
 await rm(dist, { recursive: true, force: true });
 await mkdir(staging, { recursive: true });
 
-await cp(path.join(root, 'build'), path.join(staging, 'build'), { recursive: true });
+await cp(path.join(appRoot, 'build'), path.join(staging, 'build'), { recursive: true });
 await writeFile(
   path.join(staging, 'package.json'),
   JSON.stringify(
@@ -76,7 +76,7 @@ const [built] = await packager({
 const versionFolder = path.join(out, version);
 await rename(built, versionFolder);
 await cp(
-  path.join(root, 'scripts', 'Last Epoch Overlay.vbs'),
+  path.join(appRoot, 'scripts', 'Last Epoch Overlay.vbs'),
   path.join(out, 'Last Epoch Overlay.vbs')
 );
 

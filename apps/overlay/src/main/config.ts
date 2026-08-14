@@ -1,3 +1,5 @@
+import { PROTOCOL_VERSION, type ProtocolVersion } from '@irudd-le/protocol';
+
 /**
  * All the knobs you are likely to want to turn live here.
  * Nothing else in the app hardcodes size, position or shortcuts.
@@ -6,6 +8,7 @@
 export type Corner = 'top-right' | 'top-left' | 'bottom-right' | 'bottom-left';
 
 export interface OverlayConfig {
+  protocolVersion: ProtocolVersion;
   window: {
     width: number;
     height: number;
@@ -27,6 +30,7 @@ export interface OverlayConfig {
 }
 
 export const config: OverlayConfig = {
+  protocolVersion: PROTOCOL_VERSION,
   window: {
     width: 360,
     height: 480,

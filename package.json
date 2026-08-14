@@ -1,27 +1,15 @@
 {
-  "name": "last-epoch-overlay",
-  "version": "0.1.1",
-  "description": "Transparent always-on-top overlay for Last Epoch",
+  "name": "irudd-le",
+  "description": "Workspace for the Last Epoch passive content shell",
   "private": true,
-  "main": "build/main/index.js",
-  "author": "Andreas Lundgren",
-  "license": "MIT",
   "packageManager": "pnpm@11.20.0",
   "scripts": {
-    "postinstall": "node scripts/ensure-electron.mjs",
-    "compile": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json && node scripts/copy-static.mjs",
-    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
-    "start": "pnpm compile && electron .",
-    "start:interactive": "pnpm compile && electron . --start-interactive",
-    "dev": "nodemon --quiet --watch src --ext ts,html,css --exec \"pnpm compile && electron .\"",
-    "clean": "node -e \"require('node:fs').rmSync('build',{recursive:true,force:true})\"",
-    "package:win": "pnpm compile && node scripts/package-win.mjs"
-  },
-  "devDependencies": {
-    "@electron/packager": "^20.2.0",
-    "@types/node": "^22.20.1",
-    "electron": "^43.3.0",
-    "nodemon": "^3.1.14",
-    "typescript": "^5.9.3"
+    "build": "corepack pnpm -r --if-present run build",
+    "typecheck": "corepack pnpm -r --if-present run typecheck",
+    "test": "corepack pnpm -r --if-present run test",
+    "dev": "corepack pnpm --filter @irudd-le/overlay dev",
+    "start": "corepack pnpm --filter @irudd-le/overlay start",
+    "start:interactive": "corepack pnpm --filter @irudd-le/overlay start:interactive",
+    "package:win": "corepack pnpm --filter @irudd-le/overlay package:win"
   }
 }

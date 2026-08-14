@@ -1,0 +1,30 @@
+{
+  "name": "@irudd-le/overlay",
+  "version": "0.1.1",
+  "description": "The Last Epoch passive content-shell Electron overlay",
+  "private": true,
+  "main": "build/main/index.js",
+  "author": "Andreas Lundgren",
+  "license": "MIT",
+  "scripts": {
+    "postinstall": "node scripts/ensure-electron.mjs",
+    "build": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.node.json && tsc -p tsconfig.web.json && node scripts/copy-static.mjs",
+    "compile": "corepack pnpm build",
+    "typecheck": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "start": "corepack pnpm build && electron .",
+    "start:interactive": "corepack pnpm build && electron . --start-interactive",
+    "dev": "nodemon --quiet --watch src --ext ts,html,css --exec \"corepack pnpm build && electron .\"",
+    "clean": "node -e \"require('node:fs').rmSync('build',{recursive:true,force:true})\"",
+    "package:win": "corepack pnpm build && node scripts/package-win.mjs"
+  },
+  "dependencies": {
+    "@irudd-le/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.2.0",
+    "@types/node": "^22.20.1",
+    "electron": "^43.3.0",
+    "nodemon": "^3.1.14",
+    "typescript": "^5.9.3"
+  }
+}

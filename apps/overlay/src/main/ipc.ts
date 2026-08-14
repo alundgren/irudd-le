@@ -28,6 +28,7 @@ export function registerIpc({
     if (!fromOverlay(event)) return null;
     return {
       ...mode.state(),
+      protocolVersion: config.protocolVersion,
       // Passed through so the UI can show the real keys instead of hardcoding
       // them in two places.
       shortcuts: config.shortcuts,
