@@ -4,13 +4,43 @@
     <meta charset="utf-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src 'self';"
+      content="default-src 'none'; base-uri 'none'; connect-src 'none'; form-action 'none'; frame-src 'self'; img-src 'self'; media-src 'none'; object-src 'none'; script-src 'self'; style-src 'self';"
     />
     <title>Last Epoch Overlay</title>
     <link rel="stylesheet" href="style.css" />
   </head>
-  <body>
-    <!-- Issue #23 installs the sandboxed revision renderer here. Until then,
-         the window intentionally has no planner, controls, tabs, or chrome. -->
+  <body data-mode="click-through">
+    <main id="content-box" aria-label="Published overlay content">
+      <!--
+        Revision activation in #28 replaces srcdoc only after it has staged a
+        complete candidate. The empty sandbox deliberately grants no escape
+        hatches: published documents cannot run code, submit forms, navigate
+        this shell, or see the trusted outer renderer/preload bridge.
+      -->
+      <iframe
+        id="revision-content"
+        title="Published overlay content"
+        sandbox=""
+        referrerpolicy="no-referrer"
+        srcdoc="<!doctype html><html><head><meta charset=utf-8><meta http-equiv=Content-Security-Policy content=&quot;default-src 'none'; base-uri 'none'; font-src data:; form-action 'none'; img-src data: blob:; object-src 'none'; script-src 'none'; style-src 'unsafe-inline'&quot;></head><body></body></html>"
+      ></iframe>
+    </main>
+
+    <!-- Kept outside the content box and hidden during ordinary play. It is a
+         small, deliberate local recovery surface until enrollment arrives. -->
+    <aside id="local-setup" hidden aria-label="Local setup and recovery">
+      <h1>Local setup</h1>
+      <p>
+        Published content is passive. Use this mode only to recover the local
+        overlay, then return to click-through before playing.
+      </p>
+      <button id="resume-content" type="button">Return to click-through</button>
+      <button id="quit-overlay" type="button">Quit overlay</button>
+    </aside>
+
+    <!-- #28 sets this visible only when a staged revision reports overflow. -->
+    <span id="overflow-warning" role="status" aria-label="Published content is clipped" hidden>!</span>
+
+    <script type="module" src="app.js"></script>
   </body>
 </html>

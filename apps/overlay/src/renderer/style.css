@@ -6,3 +6,76 @@ body {
   overflow: hidden;
   background: transparent;
 }
+
+* {
+  box-sizing: border-box;
+}
+
+#content-box {
+  width: 100%;
+  height: 100%;
+  overflow: clip;
+}
+
+#revision-content {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  pointer-events: none;
+}
+
+/* This surface is intentionally absent during play. The shortcut switches the
+   OS window out of click-through before this becomes usable. */
+#local-setup {
+  position: fixed;
+  inset: 12px;
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid #d69a2d;
+  border-radius: 8px;
+  background: rgba(18, 16, 12, 0.96);
+  color: #f5ead7;
+  font: 14px/1.45 system-ui, sans-serif;
+}
+
+body[data-mode='interactive'] #local-setup:not([hidden]) {
+  display: flex;
+}
+
+#local-setup h1,
+#local-setup p {
+  margin: 0;
+}
+
+#local-setup button {
+  width: fit-content;
+  padding: 7px 10px;
+  border: 1px solid #d69a2d;
+  border-radius: 4px;
+  background: #322312;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+#overflow-warning {
+  position: fixed;
+  right: 3px;
+  bottom: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #d69a2d;
+  color: #1b1309;
+  font: 700 10px/12px system-ui, sans-serif;
+  text-align: center;
+}
+
+#overflow-warning:not([hidden]) {
+  display: block;
+}

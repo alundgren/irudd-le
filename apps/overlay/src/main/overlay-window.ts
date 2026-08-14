@@ -80,6 +80,14 @@ export function createOverlayWindow(): BrowserWindow {
   // fullscreen (macOS). Harmless no-op elsewhere.
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
+  // The iframe sandbox blocks a published document from escaping upward, and
+  // this guard also prevents it from replacing even its own document (links,
+  // meta refreshes, and any future browser navigation mechanism). This event
+  // covers subframes as well as the outer renderer.
+  win.webContents.on('will-frame-navigate', (event) => {
+    event.preventDefault();
+  });
+
   void win.loadFile(RENDERER_HTML);
 
   win.once('ready-to-show', () => {
