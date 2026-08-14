@@ -1,6 +1,13 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
-import { PROTOCOL_VERSION, channelSchema, revisionSchema, type Channel, type Revision } from '@irudd-le/protocol';
-import { Store, type StoredRevision } from './store';
+import {
+  PROTOCOL_VERSION,
+  channelSchema,
+  revisionSchema,
+  type Channel,
+  type ProtocolError,
+  type Revision,
+} from '@irudd-le/protocol';
+import { Store } from './store';
 
 export interface MailboxOptions {
   databasePath: string;
@@ -187,24 +194,17 @@ function getCurrentRevision(res: ServerResponse, store: Store, channelId: string
   if (!revision) {
     return sendError(res, 404, 'no_current_revision', `Channel '${channelId}' has no current revision`);
   }
-  return sendJson(res, 200, serializeRevision(revision));
-}
-
-function serializeRevision(revision: StoredRevision): Revision {
-  return {
-    protocolVersion: revision.protocolVersion,
-    id: revision.id,
-    channel: revision.channel,
-    profileVersion: revision.profileVersion,
-    html: revision.html,
-    assetIds: revision.assetIds,
-  };
+  return sendJson(res, 200, revision);
 }
 
 function isPrimaryKeyConflict(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
-  const code = (error as { errcode?: unknown }).errcode;
-  return code === 1555 || /UNIQUE constraint failed: revisions/.test(error.message);
+  // `node:sqlite` exposes the SQLite extended result code on `.errcode`
+  // (1555 = SQLITE_CONSTRAINT_PRIMARYKEY) even though the public TypeScript
+  // types only declare `.code`. Fall back to the message string for forward
+  // compatibility with renamed fields.
+  const errcode = (error as { errcode?: unknown }).errcode;
+  return errcode === 1555 || /UNIQUE constraint failed: revisions/.test(error.message);
 }
 
 async function readJsonBody(req: IncomingMessage, maxBodyBytes: number): Promise<{ error: ReadError } | { error: null; value: unknown }> {
@@ -260,7 +260,8 @@ function timingSafeEqual(a: string, b: string): boolean {
 }
 
 function sendError(res: ServerResponse, status: number, code: string, message: string): void {
-  sendJson(res, status, { protocolVersion: PROTOCOL_VERSION, code, message });
+  const error: ProtocolError = { protocolVersion: PROTOCOL_VERSION, code, message };
+  sendJson(res, status, error);
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

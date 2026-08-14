@@ -2,16 +2,6 @@ import { DatabaseSync } from 'node:sqlite';
 import { PROTOCOL_VERSION, type Channel, type Revision } from '@irudd-le/protocol';
 import { runMigrations } from './migrations';
 
-export interface StoredRevision {
-  channel: string;
-  id: string;
-  protocolVersion: 1;
-  profileVersion: number;
-  html: string;
-  assetIds: string[];
-  createdAt: number;
-}
-
 export class Store {
   private readonly db: DatabaseSync;
 
@@ -70,10 +60,10 @@ export class Store {
     }
   }
 
-  getCurrentRevision(channel: string): StoredRevision | undefined {
+  getCurrentRevision(channel: string): Revision | undefined {
     const row = this.db
       .prepare(
-        `SELECT r.id, r.protocolVersion, r.profileVersion, r.html, r.asset_ids AS assetIds, r.createdAt
+        `SELECT r.id, r.protocolVersion, r.profileVersion, r.html, r.asset_ids AS assetIds
            FROM revisions r
            JOIN channel_current_revisions c ON c.revision_id = r.id AND c.channel = r.channel
           WHERE c.channel = ?`
@@ -85,25 +75,16 @@ export class Store {
           profileVersion: number;
           html: Uint8Array;
           assetIds: string;
-          createdAt: number;
         }
       | undefined;
     if (!row) return undefined;
     return {
-      channel,
-      id: row.id,
       protocolVersion: PROTOCOL_VERSION,
+      id: row.id,
+      channel,
       profileVersion: row.profileVersion,
       html: Buffer.from(row.html).toString('utf8'),
       assetIds: JSON.parse(row.assetIds) as string[],
-      createdAt: row.createdAt,
     };
-  }
-
-  currentRevisionId(channel: string): string | undefined {
-    const row = this.db
-      .prepare('SELECT revision_id AS revisionId FROM channel_current_revisions WHERE channel = ?')
-      .get(channel) as { revisionId: string } | undefined;
-    return row?.revisionId;
   }
 }

@@ -29,15 +29,23 @@ via `MAILBOX_DATABASE_PATH` (and the `:memory:` form is used in tests). One
 volume mount is the whole durable state — there is no blob bucket or external
 store alongside it.
 
+The "local container can initialize and reopen the same database volume"
+criterion in #34 rests on a single SQLite file plus the mailbox's identical
+`Store`/migrations code path between the in-process reopen tests and the
+container. The committed test suite reopens the file in process
+(slice 4 and slice 8); the script `apps/mailbox/scripts/container-smoke.sh`
+exercises the same path against the built Docker image when Docker is
+available, and is intentionally kept out of `pnpm test` so the unit suite
+remains runnable without a Docker daemon.
+
 ## Content as BLOBs
 
 `revisions.html` is stored in a `BLOB` column, written as UTF-8 bytes and read
 back through `Buffer.from(blob).toString('utf8')`. Issue #34 names HTML,
-assets, and later screenshots as SQLite BLOB content, and the migration already
-reserves the same storage class for the asset table that #33 will introduce.
-Storing HTML as bytes rather than `TEXT` is a deliberate choice to treat all
-binary content uniformly — the same shape will serve asset BLOBs without a
-schema split.
+assets, and later screenshots as SQLite BLOB content, and #33 will introduce an
+asset table that reuses the same storage class. Storing HTML as bytes rather
+than `TEXT` is a deliberate choice to treat all binary content uniformly — the
+same shape will serve asset BLOBs without a schema split.
 
 ## Atomic publication preserves the prior revision
 
