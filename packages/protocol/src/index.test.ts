@@ -8,6 +8,7 @@ import {
   protocolErrorSchema,
   protocolEnvelopeSchema,
   renderStatusSchema,
+  revisionSchema,
   targetProfileSchema,
 } from './index';
 
@@ -51,6 +52,36 @@ test('rejects unsupported versions on every independently parsed message', () =>
     rendered: { width: 960, height: 540, scrollWidth: 960, scrollHeight: 540 },
     overflow: { horizontal: false, vertical: false }, activation: 'rejected',
   });
+});
+
+const NON_SLUG_IDS = ['../../etc/passwd', 'Main', 'has space', '', '-leading', 'a'.repeat(65)];
+
+const rejectsNonSlug = (parse: (value: unknown) => unknown, base: object, key: string, path: string): void => {
+  for (const id of NON_SLUG_IDS) {
+    assert.throws(
+      () => parse({ ...base, protocolVersion: PROTOCOL_VERSION, [key]: id }),
+      (error: unknown) => error instanceof ProtocolValidationError && error.path === path,
+      `expected ${path} to reject ${JSON.stringify(id)}`
+    );
+  }
+};
+
+test('rejects channel identifiers that are not slugs', () => {
+  rejectsNonSlug(channelSchema.parse, { id: 'main', name: 'Main channel' }, 'id', 'channel.id');
+  rejectsNonSlug(
+    revisionSchema.parse,
+    { id: 'rev-001', channel: 'main', profileVersion: 1, html: '<p>hi</p>', assetIds: [] },
+    'channel',
+    'revision.channel'
+  );
+  rejectsNonSlug(protocolEnvelopeSchema.parse, { channel: 'main', payload: {} }, 'channel', 'channel');
+});
+
+test('accepts a channel name that is not a slug', () => {
+  assert.deepEqual(
+    channelSchema.parse({ protocolVersion: PROTOCOL_VERSION, id: 'main', name: 'Main channel' }),
+    { protocolVersion: PROTOCOL_VERSION, id: 'main', name: 'Main channel' }
+  );
 });
 
 test('validates a target profile at the protocol boundary', () => {

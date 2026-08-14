@@ -23,7 +23,34 @@ corepack pnpm --filter @irudd-le/protocol test
 corepack pnpm test
 ```
 
+Every command above must pass from a clean checkout, before anything has been
+built. A package that depends on `@irudd-le/protocol` consumes its emitted
+`build/` types, so its own `build`, `typecheck`, and `test` scripts must build
+that dependency first, the way `apps/overlay` does:
+
+```json
+"typecheck": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.json --noEmit"
+```
+
+Relying on `corepack pnpm -r` ordering is not enough: it hides the gap until
+someone runs a single package with `--filter`.
+
+Because several packages then build `@irudd-le/protocol`, the root `build`,
+`typecheck`, and `test` scripts pin `--workspace-concurrency=1` so two builds
+never write its `build/` directory at once. Keep that flag.
+
 Do refactoring during review, after the red → green slices are complete.
+
+### Scope
+
+Implement the issue in front of you and nothing else. Before starting, read the
+issue's sub-issues and the issues it blocks, and treat anything they own as out
+of scope even when the parent issue mentions it in passing. Say in the PR
+description which neighbouring issues you deliberately left alone.
+
+Prefer extending `packages/protocol` over re-implementing validation locally.
+If a rule constrains a value that crosses the wire, it belongs in the shared
+schema, not in an adapter.
 
 ### Issue tracker
 

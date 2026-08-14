@@ -78,3 +78,13 @@ error response is shaped like `protocolErrorSchema`:
 rejected explicitly with code `unsupported_protocol_version`, so a client that
 speaks a newer protocol gets back a server-versioned error rather than a
 silent downgrade.
+
+## Channel identifiers are a protocol concern
+
+Channel ids are constrained to a lowercase slug
+(`^[a-z0-9][a-z0-9-]{0,63}$`) by `@irudd-le/protocol`, not by the mailbox. The
+rule belongs in the shared contract because the same identifier is about to
+appear in overlay enrolment (#21), CLI arguments, and MCP tool inputs; keeping
+it in the schema means every client rejects a bad id the same way instead of
+each adapter inventing its own check. A channel's human-readable `name` stays
+free-form.

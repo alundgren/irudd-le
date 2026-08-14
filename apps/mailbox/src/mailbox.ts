@@ -1,4 +1,4 @@
-import type { IncomingMessage, Server, ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import {
   PROTOCOL_VERSION,
   channelSchema,
@@ -29,29 +29,35 @@ export function createMailbox(options: MailboxOptions): Mailbox {
   let server: Server | undefined;
   let boundUrl = '';
   let store: Store | undefined;
-  let ready = false;
 
   const start = async (): Promise<void> => {
-    store = new Store(options.databasePath);
-    ready = true;
-    const http = await import('node:http');
-    server = http.createServer((req, res) => {
-      void handle(req, res, options, () => store!, maxBodyBytes, () => ready);
+    // The store is opened before the listener exists, so every request the
+    // handler sees is served by an open database.
+    const openStore = new Store(options.databasePath);
+    store = openStore;
+    const listener = createServer((req, res) => {
+      handle(req, res, options, openStore, maxBodyBytes).catch((error: unknown) => {
+        console.error('Unhandled mailbox request error', error);
+        if (!res.headersSent) {
+          sendError(res, 500, 'internal_error', 'The mailbox could not process the request');
+        }
+        res.end();
+      });
     });
+    server = listener;
     await new Promise<void>((resolve, reject) => {
-      server!.once('error', reject);
-      server!.listen(options.listen.port, options.listen.host, () => {
-        server!.off('error', reject);
+      listener.once('error', reject);
+      listener.listen(options.listen.port, options.listen.host, () => {
+        listener.off('error', reject);
         resolve();
       });
     });
-    const addr = server.address();
+    const addr = listener.address();
     const port = addr && typeof addr === 'object' ? addr.port : options.listen.port;
     boundUrl = `http://${options.listen.host}:${port}`;
   };
 
   const stop = async (): Promise<void> => {
-    ready = false;
     const s = server;
     if (!s) return;
     await new Promise<void>((resolve) => s.close(() => resolve()));
@@ -74,16 +80,12 @@ async function handle(
   req: IncomingMessage,
   res: ServerResponse,
   options: MailboxOptions,
-  store: () => Store,
-  maxBodyBytes: number,
-  isReady: () => boolean
+  store: Store,
+  maxBodyBytes: number
 ): Promise<void> {
   const method = req.method ?? 'GET';
   const url = new URL(req.url ?? '', 'http://mailbox.local');
   if (url.pathname === '/healthz' || url.pathname === '/readyz') {
-    if (url.pathname === '/readyz' && !isReady()) {
-      return sendError(res, 503, 'not_ready', 'Mailbox is not ready');
-    }
     return sendJson(res, 200, { ok: true, protocolVersion: PROTOCOL_VERSION });
   }
   if (url.pathname.startsWith('/v1/')) {
@@ -100,22 +102,22 @@ async function routeV1(
   res: ServerResponse,
   method: string,
   pathname: string,
-  store: () => Store,
+  store: Store,
   maxBodyBytes: number
 ): Promise<void> {
   if (pathname === '/v1/channels' && method === 'POST') {
-    return createChannel(req, res, store(), maxBodyBytes);
+    return createChannel(req, res, store, maxBodyBytes);
   }
   const channelMatch = pathname.match(/^\/v1\/channels\/([^/]+)$/);
   if (channelMatch) {
     const id = decodeURIComponent(channelMatch[1] ?? '');
-    if (method === 'GET') return fetchChannel(res, store(), id);
+    if (method === 'GET') return fetchChannel(res, store, id);
   }
   const currentMatch = pathname.match(/^\/v1\/channels\/([^/]+)\/revisions\/current$/);
   if (currentMatch) {
     const channelId = decodeURIComponent(currentMatch[1] ?? '');
-    if (method === 'PUT') return publishRevision(req, res, store(), channelId, maxBodyBytes);
-    if (method === 'GET') return getCurrentRevision(res, store(), channelId);
+    if (method === 'PUT') return publishRevision(req, res, store, channelId, maxBodyBytes);
+    if (method === 'GET') return getCurrentRevision(res, store, channelId);
   }
   return sendError(res, 404, 'not_found', 'Not found');
 }
@@ -178,7 +180,7 @@ async function publishRevision(
         res,
         409,
         'revision_conflict',
-        `Revision '${revision.id}' already exists for channel '${channelId}`
+        `Revision '${revision.id}' already exists for channel '${channelId}'`
       );
     }
     throw e;

@@ -83,6 +83,32 @@ test('creates and reads a channel through the canonical API', async () => {
   }
 });
 
+test('rejects a channel id that is not a slug', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  const headers = { 'content-type': 'application/json', ...authHeader('test-token') };
+  try {
+    const rejected = await fetch(new URL('/v1/channels', base), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ protocolVersion: 1, id: '../../etc/passwd', name: 'Traversal' }),
+    });
+    assert.equal(rejected.status, 400);
+    const body = await jsonBody(rejected);
+    assert.equal(body.code, 'invalid_protocol_value');
+    assert.equal(body.protocolVersion, 1);
+
+    const listed = await fetch(new URL('/v1/channels/etc', base), {
+      method: 'GET',
+      headers: authHeader('test-token'),
+    });
+    assert.equal(listed.status, 404);
+  } finally {
+    await mailbox.stop();
+  }
+});
+
 test('restarts against the same SQLite file and retains its channels', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'mailbox-restart-'));
   const databasePath = path.join(dir, 'mailbox.db');

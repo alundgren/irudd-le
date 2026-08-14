@@ -4,9 +4,9 @@
   "private": true,
   "packageManager": "pnpm@11.20.0",
   "scripts": {
-    "build": "corepack pnpm -r --if-present run build",
-    "typecheck": "corepack pnpm -r --if-present run typecheck",
-    "test": "corepack pnpm -r --if-present run test",
+    "build": "corepack pnpm -r --workspace-concurrency=1 --if-present run build",
+    "typecheck": "corepack pnpm -r --workspace-concurrency=1 --if-present run typecheck",
+    "test": "corepack pnpm -r --workspace-concurrency=1 --if-present run test",
     "dev": "corepack pnpm --filter @irudd-le/overlay dev",
     "start": "corepack pnpm --filter @irudd-le/overlay start",
     "start:interactive": "corepack pnpm --filter @irudd-le/overlay start:interactive",
