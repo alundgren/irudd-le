@@ -63,7 +63,7 @@ export class Store {
   getCurrentRevision(channel: string): Revision | undefined {
     const row = this.db
       .prepare(
-        `SELECT r.id, r.protocolVersion, r.profileVersion, r.html, r.asset_ids AS assetIds
+        `SELECT r.id, r.profileVersion, r.html, r.asset_ids AS assetIds
            FROM revisions r
            JOIN channel_current_revisions c ON c.revision_id = r.id AND c.channel = r.channel
           WHERE c.channel = ?`
@@ -71,7 +71,6 @@ export class Store {
       .get(channel) as
       | {
           id: string;
-          protocolVersion: number;
           profileVersion: number;
           html: Uint8Array;
           assetIds: string;
