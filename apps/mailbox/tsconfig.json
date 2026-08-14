@@ -1,5 +1,12 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "module": "CommonJS", "rootDir": "./src", "outDir": "./build", "declaration": true },
+  "compilerOptions": {
+    "module": "CommonJS",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "rootDir": "./src",
+    "outDir": "./build",
+    "declaration": true
+  },
   "include": ["src/**/*.ts"]
 }
