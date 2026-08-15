@@ -68,6 +68,6 @@ export const config: OverlayConfig = {
     heartbeatIntervalMs: 20_000,
     preferredIconSize: { min: 16, max: 48 },
     minimumTextSize: 12,
-    features: [],
+    features: ['render-status'],
   },
 };

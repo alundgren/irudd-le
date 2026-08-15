@@ -6,6 +6,8 @@ import {
   createTokenRequestSchema,
   heartbeatRequestSchema,
   pairTargetRequestSchema,
+  renderStatusSchema,
+  renderStatusObservationSchema,
   registerTargetRequestSchema,
   revisionPublicationSchema,
   type Channel,
@@ -17,6 +19,7 @@ import {
   type TargetRegistration,
   type TokenKind,
   type TokenSummary,
+  targetStatusSchema,
 } from '@irudd-le/protocol';
 import { Store, type TokenRecord } from './store';
 import { ADMIN_UI_HTML } from './admin-ui';
@@ -59,6 +62,7 @@ export interface Mailbox {
 
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 export const DEFAULT_PAIRING_CODE_TTL_MS = 10 * 60 * 1000;
+export const TARGET_ONLINE_WINDOW_MS = 60 * 1000;
 
 export function createMailbox(options: MailboxOptions): Mailbox {
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
@@ -215,6 +219,24 @@ async function routeV1(
     // -- there is nothing for a superuser to usefully impersonate.
     if (principal.kind !== 'target' || principal.id !== id) return forbidden(res);
     return heartbeatTarget(req, res, store, maxBodyBytes, principal);
+  }
+  const renderStatusMatch = pathname.match(/^\/v1\/targets\/([^/]+)\/render-status$/);
+  if (renderStatusMatch && method === 'PUT') {
+    const id = decodeURIComponent(renderStatusMatch[1] ?? '');
+    if (principal.kind !== 'target' || principal.id !== id) return forbidden(res);
+    return reportRenderStatus(req, res, store, maxBodyBytes, id);
+  }
+  const targetMatch = pathname.match(/^\/v1\/channels\/([^/]+)\/target$/);
+  if (targetMatch && method === 'GET') {
+    const channelId = decodeURIComponent(targetMatch[1] ?? '');
+    if (!canAccessChannel(principal, channelId, ['publisher', 'reader', 'target'])) return forbidden(res);
+    return getTargetHandler(res, store, channelId);
+  }
+  const renderStatusForChannelMatch = pathname.match(/^\/v1\/channels\/([^/]+)\/render-status$/);
+  if (renderStatusForChannelMatch && method === 'GET') {
+    const channelId = decodeURIComponent(renderStatusForChannelMatch[1] ?? '');
+    if (!canAccessChannel(principal, channelId, ['publisher', 'reader', 'target'])) return forbidden(res);
+    return getRenderStatusHandler(res, store, channelId);
   }
   if (pathname === '/v1/admin/targets' && method === 'GET') {
     if (principal.kind !== 'admin') return forbidden(res);
@@ -559,6 +581,10 @@ async function registerTarget(
     pairingCodeExpiresAt,
     createdAt: now,
     lastSeenAt: now,
+    capabilities: profile.features,
+    clientVersion: 'unknown',
+    profileChangedAt: null,
+    republishRecommended: false,
   });
   const registration: TargetRegistration = { protocolVersion: PROTOCOL_VERSION, id, secret, pairingCode, pairingCodeExpiresAt };
   return sendJson(res, 201, registration, { 'cache-control': 'no-store' });
@@ -579,9 +605,77 @@ async function heartbeatTarget(
   if (!parsed.success) {
     return sendError(res, 400, parsed.error.code, parsed.error.message);
   }
-  store.touchTargetHeartbeat(principal.id, parsed.data.profile);
-  const response: HeartbeatResponse = { protocolVersion: PROTOCOL_VERSION, targetId: principal.id, channel: principal.channel };
+  const outcome = store.touchTargetHeartbeat(
+    principal.id,
+    parsed.data.profile,
+    parsed.data.capabilities,
+    parsed.data.clientVersion
+  );
+  const response: HeartbeatResponse = {
+    protocolVersion: PROTOCOL_VERSION,
+    targetId: principal.id,
+    channel: principal.channel,
+    profileVersion: outcome.profile.version,
+    profileChanged: outcome.profileChanged,
+    republishRecommended: outcome.republishRecommended,
+  };
   return sendJson(res, 200, response);
+}
+
+async function reportRenderStatus(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: Store,
+  maxBodyBytes: number,
+  targetId: string
+): Promise<void> {
+  const result = await readJsonBody(req, maxBodyBytes);
+  if (result.error) return sendError(res, result.error.status, result.error.code, result.error.message);
+  const parsed = renderStatusSchema.safeParse(result.value);
+  if (!parsed.success) return sendError(res, 400, parsed.error.code, parsed.error.message);
+  if (parsed.data.targetId !== targetId) return sendError(res, 403, 'forbidden', 'A target may only report its own render status');
+  const outcome = store.recordRenderStatus(parsed.data);
+  if (outcome === 'stale_profile') {
+    return sendError(res, 409, 'stale_render_observation', 'The render observation does not match the target’s current profile');
+  }
+  if (outcome === 'stale_observation') {
+    return sendError(res, 409, 'stale_render_observation', 'A newer render observation has already been recorded');
+  }
+  if (outcome === 'unknown_revision') {
+    return sendError(res, 409, 'unknown_revision', 'The observation names a revision outside this target’s channel');
+  }
+  return sendJson(res, 200, { protocolVersion: PROTOCOL_VERSION });
+}
+
+function getTargetHandler(res: ServerResponse, store: Store, channelId: string): void {
+  if (!store.getChannel(channelId)) return sendError(res, 404, 'channel_not_found', `Channel '${channelId}' not found`);
+  const target = store.getTargetByChannel(channelId);
+  if (!target) return sendError(res, 404, 'target_not_found', `Channel '${channelId}' has no target`);
+  return sendJson(res, 200, targetStatusSchema.parse({
+    protocolVersion: PROTOCOL_VERSION,
+    id: target.id,
+    channel: channelId,
+    clientName: target.clientName,
+    profile: target.profile,
+    capabilities: target.capabilities,
+    clientVersion: target.clientVersion,
+    lastSeenAt: target.lastSeenAt,
+    online: Date.now() - target.lastSeenAt <= TARGET_ONLINE_WINDOW_MS,
+    profileChangedAt: target.profileChangedAt,
+    republishRecommended: target.republishRecommended,
+  }));
+}
+
+function getRenderStatusHandler(res: ServerResponse, store: Store, channelId: string): void {
+  if (!store.getChannel(channelId)) return sendError(res, 404, 'channel_not_found', `Channel '${channelId}' not found`);
+  const target = store.getTargetByChannel(channelId);
+  if (!target) return sendError(res, 404, 'target_not_found', `Channel '${channelId}' has no target`);
+  const status = store.getRenderStatus(target.id);
+  if (!status) return sendError(res, 404, 'no_render_status', `Target '${target.id}' has not reported a render observation`);
+  return sendJson(res, 200, renderStatusObservationSchema.parse({
+    ...status,
+    online: Date.now() - target.lastSeenAt <= TARGET_ONLINE_WINDOW_MS,
+  }));
 }
 
 function listPendingTargetsHandler(res: ServerResponse, store: Store): void {

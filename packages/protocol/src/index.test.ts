@@ -68,9 +68,9 @@ test('rejects unsupported versions on every independently parsed message', () =>
   invalidVersion(assetSchema.parse, { id: 'asset-1', contentType: 'image/png', byteLength: 4, sha256: 'a'.repeat(64) });
   invalidVersion(protocolErrorSchema.parse, { code: 'invalid_content', message: 'The document did not validate.' });
   invalidVersion(renderStatusSchema.parse, {
-    targetId: 'target-1', profileVersion: 1, currentRevisionId: null, candidateRevisionId: 'rev-2',
+    targetId: 'target-1', attemptId: 'attempt-1', attemptStartedAt: 1, profileVersion: 1, currentRevisionId: null, candidateRevisionId: 'rev-2',
     rendered: { width: 960, height: 540, scrollWidth: 960, scrollHeight: 540 },
-    overflow: { horizontal: false, vertical: false }, activation: 'rejected',
+    overflow: { horizontal: false, vertical: false }, activation: 'rejected', failureReason: 'stage failed',
   });
 });
 
@@ -143,11 +143,13 @@ test('validates a register-target request and rejects an oversized client name',
 });
 
 test('validates a heartbeat request against the target profile schema', () => {
-  const request = heartbeatRequestSchema.parse({ profile: validProfile() });
+  const request = heartbeatRequestSchema.parse({ profile: validProfile(), capabilities: ['render-status'], clientVersion: '0.1.1' });
   assert.deepEqual(request.profile, validProfile());
+  assert.deepEqual(request.capabilities, ['render-status']);
+  assert.equal(request.clientVersion, '0.1.1');
 
   assert.throws(
-    () => heartbeatRequestSchema.parse({ profile: { ...validProfile(), contentBox: { width: 0, height: 540 } } }),
+    () => heartbeatRequestSchema.parse({ profile: { ...validProfile(), contentBox: { width: 0, height: 540 } }, capabilities: [], clientVersion: '0.1.1' }),
     (error: unknown) => error instanceof ProtocolValidationError && error.path === 'targetProfile.contentBox.width'
   );
 });
@@ -193,15 +195,15 @@ test('validates a target registration response, since it gets persisted as local
 
 test('validates a heartbeat response and accepts a null channel', () => {
   assert.deepEqual(
-    heartbeatResponseSchema.parse({ protocolVersion: PROTOCOL_VERSION, targetId: 'target-1', channel: null }),
-    { protocolVersion: PROTOCOL_VERSION, targetId: 'target-1', channel: null }
+    heartbeatResponseSchema.parse({ protocolVersion: PROTOCOL_VERSION, targetId: 'target-1', channel: null, profileVersion: 1, profileChanged: false, republishRecommended: false }),
+    { protocolVersion: PROTOCOL_VERSION, targetId: 'target-1', channel: null, profileVersion: 1, profileChanged: false, republishRecommended: false }
   );
   assert.deepEqual(
-    heartbeatResponseSchema.parse({ protocolVersion: PROTOCOL_VERSION, targetId: 'target-1', channel: 'main' }),
-    { protocolVersion: PROTOCOL_VERSION, targetId: 'target-1', channel: 'main' }
+    heartbeatResponseSchema.parse({ protocolVersion: PROTOCOL_VERSION, targetId: 'target-1', channel: 'main', profileVersion: 2, profileChanged: true, republishRecommended: true }),
+    { protocolVersion: PROTOCOL_VERSION, targetId: 'target-1', channel: 'main', profileVersion: 2, profileChanged: true, republishRecommended: true }
   );
   assert.throws(
-    () => heartbeatResponseSchema.parse({ protocolVersion: PROTOCOL_VERSION, targetId: 'target-1', channel: 'Not A Slug' }),
+    () => heartbeatResponseSchema.parse({ protocolVersion: PROTOCOL_VERSION, targetId: 'target-1', channel: 'Not A Slug', profileVersion: 1, profileChanged: false, republishRecommended: false }),
     (error: unknown) => error instanceof ProtocolValidationError && error.path === 'heartbeatResponse.channel'
   );
 });

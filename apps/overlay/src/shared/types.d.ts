@@ -73,6 +73,14 @@ interface RevisionStageResult {
   revisionId: string;
   staged: boolean;
   error?: string;
+  metrics?: RenderMetrics;
+}
+
+interface RenderMetrics {
+  width: number;
+  height: number;
+  scrollWidth: number;
+  scrollHeight: number;
 }
 
 interface RevisionCommitResult {
@@ -80,6 +88,7 @@ interface RevisionCommitResult {
   revisionId: string;
   activated: boolean;
   error?: string;
+  metrics?: RenderMetrics;
 }
 
 interface RevisionApi {

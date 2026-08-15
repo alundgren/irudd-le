@@ -1,4 +1,4 @@
-import type { BrowserWindow } from 'electron';
+import { app, type BrowserWindow } from 'electron';
 import { PROTOCOL_VERSION, targetProfileSchema, type TargetProfile } from '@irudd-le/protocol';
 import { config } from './config';
 import { clearEnrollment, loadEnrollment, saveEnrollment, type EnrollmentState } from './enrollment-store';
@@ -109,7 +109,14 @@ export class EnrollmentManager {
     if (!current) return;
     try {
       const profile = await this.measureProfile();
-      const response = await heartbeat(current.mailboxUrl, current.targetId, current.secret, profile);
+      const response = await heartbeat(
+        current.mailboxUrl,
+        current.targetId,
+        current.secret,
+        profile,
+        config.enrollment.features,
+        app.getVersion()
+      );
       this.error = null;
       if (response.channel !== current.channel) {
         this.state = { ...current, channel: response.channel };
@@ -121,6 +128,7 @@ export class EnrollmentManager {
         }
         this.delivery.update(this.state);
       }
+      if (response.profileChanged) this.delivery.refresh();
     } catch (error: unknown) {
       // A transient network hiccup or an expired/unknown target must never
       // crash the loop -- the next tick retries, matching UpdateManager's
