@@ -7,7 +7,7 @@ import {
   heartbeatRequestSchema,
   pairTargetRequestSchema,
   registerTargetRequestSchema,
-  revisionSchema,
+  revisionPublicationSchema,
   type Channel,
   type CreatedToken,
   type HeartbeatResponse,
@@ -66,6 +66,7 @@ export function createMailbox(options: MailboxOptions): Mailbox {
   let server: Server | undefined;
   let boundUrl = '';
   let store: Store | undefined;
+  const revisionEvents = new RevisionEvents();
 
   const start = async (): Promise<void> => {
     // The store is opened before the listener exists, so every request the
@@ -74,7 +75,7 @@ export function createMailbox(options: MailboxOptions): Mailbox {
     store = openStore;
     bootstrapAdminToken(openStore, options.adminBootstrapToken);
     const listener = createServer((req, res) => {
-      handle(req, res, openStore, maxBodyBytes, pairingCodeTtlMs).catch((error: unknown) => {
+      handle(req, res, openStore, maxBodyBytes, pairingCodeTtlMs, revisionEvents).catch((error: unknown) => {
         console.error('Unhandled mailbox request error', error);
         if (!res.headersSent) {
           sendError(res, 500, 'internal_error', 'The mailbox could not process the request');
@@ -98,6 +99,7 @@ export function createMailbox(options: MailboxOptions): Mailbox {
   const stop = async (): Promise<void> => {
     const s = server;
     if (!s) return;
+    revisionEvents.close();
     await new Promise<void>((resolve) => s.close(() => resolve()));
     server = undefined;
     store?.close();
@@ -119,7 +121,8 @@ async function handle(
   res: ServerResponse,
   store: Store,
   maxBodyBytes: number,
-  pairingCodeTtlMs: number
+  pairingCodeTtlMs: number,
+  revisionEvents: RevisionEvents
 ): Promise<void> {
   const method = req.method ?? 'GET';
   const url = new URL(req.url ?? '', 'http://mailbox.local');
@@ -139,7 +142,7 @@ async function handle(
     if (!principal) {
       return sendError(res, 401, 'unauthorized', 'A valid bearer token is required');
     }
-    return routeV1(req, res, method, url.pathname, store, maxBodyBytes, principal);
+    return routeV1(req, res, method, url.pathname, store, maxBodyBytes, principal, revisionEvents);
   }
   return sendError(res, 404, 'not_found', 'Not found');
 }
@@ -151,7 +154,8 @@ async function routeV1(
   pathname: string,
   store: Store,
   maxBodyBytes: number,
-  principal: Principal
+  principal: Principal,
+  revisionEvents: RevisionEvents
 ): Promise<void> {
   if (pathname === '/v1/channels' && method === 'POST') {
     if (principal.kind !== 'admin') return forbidden(res);
@@ -170,12 +174,21 @@ async function routeV1(
     const channelId = decodeURIComponent(currentMatch[1] ?? '');
     if (method === 'PUT') {
       if (!canAccessChannel(principal, channelId, ['publisher'])) return forbidden(res);
-      return publishRevision(req, res, store, channelId, maxBodyBytes);
+      return publishRevision(req, res, store, channelId, maxBodyBytes, revisionEvents);
     }
     if (method === 'GET') {
-      if (!canAccessChannel(principal, channelId, ['publisher', 'reader'])) return forbidden(res);
+      if (!canAccessChannel(principal, channelId, ['publisher', 'reader', 'target'])) return forbidden(res);
       return getCurrentRevision(res, store, channelId);
     }
+  }
+  const eventsMatch = pathname.match(/^\/v1\/channels\/([^/]+)\/events$/);
+  if (eventsMatch && method === 'GET') {
+    const channelId = decodeURIComponent(eventsMatch[1] ?? '');
+    if (!canAccessChannel(principal, channelId, ['publisher', 'reader', 'target'])) return forbidden(res);
+    if (!store.getChannel(channelId)) {
+      return sendError(res, 404, 'channel_not_found', `Channel '${channelId}' not found`);
+    }
+    return revisionEvents.subscribe(channelId, res);
   }
   if (pathname === '/v1/admin/tokens') {
     if (principal.kind !== 'admin') return forbidden(res);
@@ -191,7 +204,7 @@ async function routeV1(
   const profileMatch = pathname.match(/^\/v1\/channels\/([^/]+)\/profile$/);
   if (profileMatch && method === 'GET') {
     const id = decodeURIComponent(profileMatch[1] ?? '');
-    if (!canAccessChannel(principal, id, ['publisher', 'reader'])) return forbidden(res);
+    if (!canAccessChannel(principal, id, ['publisher', 'reader', 'target'])) return forbidden(res);
     return getChannelProfileHandler(res, store, id);
   }
   const heartbeatMatch = pathname.match(/^\/v1\/targets\/([^/]+)\/heartbeat$/);
@@ -247,17 +260,18 @@ async function publishRevision(
   res: ServerResponse,
   store: Store,
   channelId: string,
-  maxBodyBytes: number
+  maxBodyBytes: number,
+  revisionEvents: RevisionEvents
 ): Promise<void> {
   const result = await readJsonBody(req, maxBodyBytes);
   if (result.error) {
     return sendError(res, result.error.status, result.error.code, result.error.message);
   }
-  const parsed = revisionSchema.safeParse(result.value);
+  const parsed = revisionPublicationSchema.safeParse(result.value);
   if (!parsed.success) {
     return sendError(res, 400, parsed.error.code, parsed.error.message);
   }
-  const revision: Revision = parsed.data;
+  const { expectedCurrentRevisionId, ...revision }: { expectedCurrentRevisionId?: string | null } & Revision = parsed.data;
   if (revision.channel !== channelId) {
     return sendError(
       res,
@@ -269,8 +283,25 @@ async function publishRevision(
   if (!store.getChannel(channelId)) {
     return sendError(res, 404, 'channel_not_found', `Channel '${channelId}' not found`);
   }
+  const profile = store.getChannelProfile(channelId);
+  if (profile && revision.profileVersion !== profile.version) {
+    return sendError(
+      res,
+      409,
+      'profile_version_mismatch',
+      `Revision profile version ${revision.profileVersion} does not match channel profile version ${profile.version}`
+    );
+  }
   try {
-    store.publishRevision(channelId, revision);
+    const result = store.publishRevision(channelId, revision, expectedCurrentRevisionId);
+    if (result === 'current_revision_conflict') {
+      return sendError(
+        res,
+        409,
+        'current_revision_conflict',
+        `Channel '${channelId}' no longer has the expected current revision`
+      );
+    }
   } catch (e) {
     if (isPrimaryKeyConflict(e)) {
       return sendError(
@@ -282,6 +313,7 @@ async function publishRevision(
     }
     throw e;
   }
+  revisionEvents.publish(channelId, revision.id);
   return sendJson(res, 201, revision);
 }
 
@@ -304,6 +336,45 @@ function isPrimaryKeyConflict(error: unknown): boolean {
   // compatibility with renamed fields.
   const errcode = (error as { errcode?: unknown }).errcode;
   return errcode === 1555 || /UNIQUE constraint failed: revisions/.test(error.message);
+}
+
+/**
+ * In-memory connection registry only: the SQLite current-revision pointer is
+ * the durable source of truth. A reconnecting overlay always fetches it, so a
+ * missed event can never lose content.
+ */
+class RevisionEvents {
+  private readonly subscribers = new Map<string, Set<ServerResponse>>();
+
+  subscribe(channel: string, res: ServerResponse): void {
+    res.writeHead(200, {
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+      'content-type': 'text/event-stream; charset=utf-8',
+    });
+    res.flushHeaders();
+    const subscribers = this.subscribers.get(channel) ?? new Set<ServerResponse>();
+    subscribers.add(res);
+    this.subscribers.set(channel, subscribers);
+    res.once('close', () => {
+      subscribers.delete(res);
+      if (subscribers.size === 0) this.subscribers.delete(channel);
+    });
+  }
+
+  publish(channel: string, revisionId: string): void {
+    const message = `event: revision\ndata: ${JSON.stringify({ revisionId })}\n\n`;
+    for (const res of this.subscribers.get(channel) ?? []) {
+      res.write(message);
+    }
+  }
+
+  close(): void {
+    for (const subscribers of this.subscribers.values()) {
+      for (const res of subscribers) res.end();
+    }
+    this.subscribers.clear();
+  }
 }
 
 async function readJsonBody(req: IncomingMessage, maxBodyBytes: number): Promise<{ error: ReadError } | { error: null; value: unknown }> {

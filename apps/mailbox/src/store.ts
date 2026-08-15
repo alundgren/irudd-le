@@ -60,11 +60,24 @@ export class Store {
     return { protocolVersion: PROTOCOL_VERSION, id: row.id, name: row.name };
   }
 
-  publishRevision(channel: string, revision: Revision): void {
+  publishRevision(
+    channel: string,
+    revision: Revision,
+    expectedCurrentRevisionId?: string | null
+  ): 'published' | 'current_revision_conflict' {
     const htmlBlob = Buffer.from(revision.html, 'utf8');
     const assetIdsJson = JSON.stringify(revision.assetIds);
     this.db.exec('BEGIN');
     try {
+      if (expectedCurrentRevisionId !== undefined) {
+        const current = this.db
+          .prepare('SELECT revision_id AS revisionId FROM channel_current_revisions WHERE channel = ?')
+          .get(channel) as { revisionId: string } | undefined;
+        if ((current?.revisionId ?? null) !== expectedCurrentRevisionId) {
+          this.db.exec('ROLLBACK');
+          return 'current_revision_conflict';
+        }
+      }
       this.db
         .prepare(
           'INSERT INTO revisions (channel, id, protocolVersion, profileVersion, html, asset_ids, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -81,9 +94,10 @@ export class Store {
       this.db
         .prepare(
           'INSERT INTO channel_current_revisions (channel, revision_id, updatedAt) VALUES (?, ?, ?) ON CONFLICT (channel) DO UPDATE SET revision_id = excluded.revision_id, updatedAt = excluded.updatedAt'
-        )
+      )
         .run(channel, revision.id, Date.now());
       this.db.exec('COMMIT');
+      return 'published';
     } catch (e) {
       this.db.exec('ROLLBACK');
       throw e;
