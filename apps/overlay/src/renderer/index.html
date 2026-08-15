@@ -21,14 +21,34 @@
       ></iframe>
     </main>
 
-    <!-- Kept outside the content box and hidden during ordinary play. It is a
-         small, deliberate local recovery surface until enrollment arrives. -->
+    <!-- Kept outside the content box and hidden during ordinary play. It is
+         the first-run enrollment screen until a channel is paired, and a
+         small deliberate local recovery surface afterwards. -->
     <aside id="local-setup" hidden aria-label="Local setup and recovery">
       <h1>Local setup</h1>
       <p>
-        Published content is passive. Use this mode only to recover the local
-        overlay, then return to click-through before playing.
+        Published content is passive. Use this mode only to enroll or recover
+        the local overlay, then return to click-through before playing.
       </p>
+
+      <section id="enrollment-form" hidden aria-label="Enroll this overlay">
+        <h2>Enroll this overlay</h2>
+        <label for="mailbox-url">Mailbox URL</label>
+        <input id="mailbox-url" type="text" placeholder="https://mailbox.example.com" autocomplete="off" />
+        <label for="client-name">This device's name</label>
+        <input id="client-name" type="text" placeholder="Living room PC" autocomplete="off" />
+        <button id="enroll-btn" type="button">Enroll</button>
+      </section>
+
+      <section id="enrollment-status" hidden aria-label="Enrollment status">
+        <h2 id="enrollment-heading"></h2>
+        <p id="enrollment-detail"></p>
+        <p id="pairing-code" aria-label="Pairing code" hidden></p>
+        <button id="re-enroll-btn" type="button">Re-enroll (retarget)</button>
+      </section>
+
+      <p id="enrollment-error" role="alert" hidden></p>
+
       <button id="resume-content" type="button">Return to click-through</button>
       <button id="quit-overlay" type="button">Quit overlay</button>
     </aside>

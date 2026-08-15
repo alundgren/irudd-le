@@ -20,8 +20,11 @@ targets, and render observations. It is not an overlay controller.
 **Channel**: a stable, named publication destination with one live overlay
 target. It remains meaningful while its target is offline.
 
-**Target**: an enrolled overlay instance. Its **target profile** describes the
-locked content box and capabilities used to compose a fitting document.
+**Target**: an overlay instance registered with the mailbox. A **pending
+target** has reported its live **target profile** (locked content box and
+capabilities) but has no channel yet; **pairing** assigns it exactly one
+newly created channel, using a short-lived **pairing code** shown only on the
+target's own screen to confirm physical possession. See ADR-0005.
 
 **Revision**: an immutable published HTML document plus its profile version and
 asset dependencies. A new publication activates atomically or leaves the prior
@@ -30,13 +33,15 @@ revision visible.
 **Render status**: a target's observation of the candidate/current revision,
 dimensions, overflow, and activation result.
 
-**Credential**: a hashed, revocable mailbox bearer secret of one **kind** —
-`admin` (unscoped), `publisher`, or `reader` (each bound to one channel). The
-full secret is shown only once, at creation. See ADR-0004.
+**Credential**: a hashed mailbox bearer secret of one **kind** — `admin`
+(unscoped), `publisher`, or `reader` (each bound to one channel, revocable).
+The full secret is shown only once, at creation. See ADR-0004. A target's own
+secret (self-issued at registration, not revocable) authenticates the same
+way but is not a credential of one of these three kinds — see ADR-0005.
 
-**Principal**: the credential kind and channel a request authenticated as,
-used to decide whether it may act on a given channel. Avoid: user, identity —
-a credential is not tied to a human account.
+**Principal**: the credential kind (or `target`) and channel a request
+authenticated as, used to decide whether it may act on a given channel.
+Avoid: user, identity — a credential is not tied to a human account.
 
 **Protocol**: the shared, runtime-validated contract. An unsupported protocol
 version fails explicitly; adapters reuse it and do not reproduce its types.

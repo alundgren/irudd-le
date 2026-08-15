@@ -1,14 +1,20 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import {
   PROTOCOL_VERSION,
   channelSchema,
   createTokenRequestSchema,
+  heartbeatRequestSchema,
+  pairTargetRequestSchema,
+  registerTargetRequestSchema,
   revisionSchema,
   type Channel,
   type CreatedToken,
+  type HeartbeatResponse,
+  type PendingTarget,
   type ProtocolError,
   type Revision,
+  type TargetRegistration,
   type TokenKind,
   type TokenSummary,
 } from '@irudd-le/protocol';
@@ -25,11 +31,23 @@ export interface MailboxOptions {
   adminBootstrapToken?: string;
   listen: { host: string; port: number };
   maxBodyBytes?: number;
+  /** How long a freshly registered target's pairing code stays valid. */
+  pairingCodeTtlMs?: number;
 }
 
+/**
+ * `target` is not a `TokenKind` (the wire credential-kind enum in
+ * `@irudd-le/protocol`): a target authenticates with its own opaque secret,
+ * self-issued at registration rather than admin-minted, and its `channel`
+ * moves from `null` to an assigned id exactly once (at pairing). It still
+ * flows through the same `authenticate()`/`Principal` choke point as every
+ * other credential kind -- see docs/adr/0005-target-enrollment-and-pairing.md.
+ */
+type PrincipalKind = TokenKind | 'target';
+
 interface Principal {
-  tokenId: string;
-  kind: TokenKind;
+  id: string;
+  kind: PrincipalKind;
   channel: string | null;
 }
 
@@ -40,9 +58,11 @@ export interface Mailbox {
 }
 
 export const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+export const DEFAULT_PAIRING_CODE_TTL_MS = 10 * 60 * 1000;
 
 export function createMailbox(options: MailboxOptions): Mailbox {
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  const pairingCodeTtlMs = options.pairingCodeTtlMs ?? DEFAULT_PAIRING_CODE_TTL_MS;
   let server: Server | undefined;
   let boundUrl = '';
   let store: Store | undefined;
@@ -54,7 +74,7 @@ export function createMailbox(options: MailboxOptions): Mailbox {
     store = openStore;
     bootstrapAdminToken(openStore, options.adminBootstrapToken);
     const listener = createServer((req, res) => {
-      handle(req, res, options, openStore, maxBodyBytes).catch((error: unknown) => {
+      handle(req, res, openStore, maxBodyBytes, pairingCodeTtlMs).catch((error: unknown) => {
         console.error('Unhandled mailbox request error', error);
         if (!res.headersSent) {
           sendError(res, 500, 'internal_error', 'The mailbox could not process the request');
@@ -97,9 +117,9 @@ export function createMailbox(options: MailboxOptions): Mailbox {
 async function handle(
   req: IncomingMessage,
   res: ServerResponse,
-  options: MailboxOptions,
   store: Store,
-  maxBodyBytes: number
+  maxBodyBytes: number,
+  pairingCodeTtlMs: number
 ): Promise<void> {
   const method = req.method ?? 'GET';
   const url = new URL(req.url ?? '', 'http://mailbox.local');
@@ -108,6 +128,11 @@ async function handle(
   }
   if ((url.pathname === '/admin' || url.pathname === '/admin/') && method === 'GET') {
     return serveAdminUi(res);
+  }
+  // A brand-new overlay has no credential yet, so registration is the one
+  // /v1/ write that precedes authentication -- see ADR-0005.
+  if (url.pathname === '/v1/targets' && method === 'POST') {
+    return registerTarget(req, res, store, maxBodyBytes, pairingCodeTtlMs);
   }
   if (url.pathname.startsWith('/v1/')) {
     const principal = authenticate(req, store);
@@ -162,6 +187,30 @@ async function routeV1(
     if (principal.kind !== 'admin') return forbidden(res);
     const id = decodeURIComponent(tokenMatch[1] ?? '');
     if (method === 'DELETE') return revokeTokenHandler(res, store, id);
+  }
+  const profileMatch = pathname.match(/^\/v1\/channels\/([^/]+)\/profile$/);
+  if (profileMatch && method === 'GET') {
+    const id = decodeURIComponent(profileMatch[1] ?? '');
+    if (!canAccessChannel(principal, id, ['publisher', 'reader'])) return forbidden(res);
+    return getChannelProfileHandler(res, store, id);
+  }
+  const heartbeatMatch = pathname.match(/^\/v1\/targets\/([^/]+)\/heartbeat$/);
+  if (heartbeatMatch && method === 'PUT') {
+    const id = decodeURIComponent(heartbeatMatch[1] ?? '');
+    // Identity-bound, not scope-bound: a target may only heartbeat itself,
+    // and (unlike channel routes) admin does not get a blanket bypass here
+    // -- there is nothing for a superuser to usefully impersonate.
+    if (principal.kind !== 'target' || principal.id !== id) return forbidden(res);
+    return heartbeatTarget(req, res, store, maxBodyBytes, principal);
+  }
+  if (pathname === '/v1/admin/targets' && method === 'GET') {
+    if (principal.kind !== 'admin') return forbidden(res);
+    return listPendingTargetsHandler(res, store);
+  }
+  const pairMatch = pathname.match(/^\/v1\/admin\/targets\/([^/]+)\/pair$/);
+  if (pairMatch && method === 'POST') {
+    if (principal.kind !== 'admin') return forbidden(res);
+    return pairTargetHandler(req, res, store, maxBodyBytes, decodeURIComponent(pairMatch[1] ?? ''));
   }
   return sendError(res, 404, 'not_found', 'Not found');
 }
@@ -294,17 +343,21 @@ function authenticate(req: IncomingMessage, store: Store): Principal | null {
   if (typeof header !== 'string' || !header.startsWith('Bearer ')) return null;
   const secret = header.slice('Bearer '.length);
   if (secret.length === 0) return null;
-  const token = store.findActiveTokenByHash(hashSecret(secret));
-  if (!token) return null;
-  return { tokenId: token.id, kind: token.kind, channel: token.channel };
+  const hash = hashSecret(secret);
+  const token = store.findActiveTokenByHash(hash);
+  if (token) return { id: token.id, kind: token.kind, channel: token.channel };
+  const target = store.findTargetBySecretHash(hash);
+  if (target) return { id: target.id, kind: 'target', channel: target.channel };
+  return null;
 }
 
 /**
- * An admin credential has full authority; publisher/reader credentials are
- * each bound to exactly one channel and only within the kinds the caller
- * allows for this operation (e.g. reading permits both publisher and reader).
+ * An admin credential has full authority; publisher/reader/target credentials
+ * are each bound to exactly one channel (target: only once paired) and only
+ * within the kinds the caller allows for this operation (e.g. reading permits
+ * both publisher and reader).
  */
-function canAccessChannel(principal: Principal, channelId: string, allowed: TokenKind[]): boolean {
+function canAccessChannel(principal: Principal, channelId: string, allowed: PrincipalKind[]): boolean {
   if (principal.kind === 'admin') return true;
   return allowed.includes(principal.kind) && principal.channel === channelId;
 }
@@ -317,6 +370,15 @@ const TOKEN_SECRET_PREFIX: Record<TokenKind, string> = { admin: 'adm', publisher
 
 function generateSecret(kind: TokenKind): string {
   return `${TOKEN_SECRET_PREFIX[kind]}_${randomBytes(24).toString('base64url')}`;
+}
+
+function generateTargetSecret(): string {
+  return `tgt_${randomBytes(24).toString('base64url')}`;
+}
+
+/** Six digits, short enough to read off an overlay screen and type elsewhere. */
+function generatePairingCode(): string {
+  return String(randomInt(0, 1_000_000)).padStart(6, '0');
 }
 
 function bootstrapAdminToken(store: Store, adminBootstrapToken: string | undefined): void {
@@ -393,6 +455,131 @@ function revokeTokenHandler(res: ServerResponse, store: Store, id: string): void
   store.revokeToken(id);
   res.writeHead(204);
   res.end();
+}
+
+async function registerTarget(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: Store,
+  maxBodyBytes: number,
+  pairingCodeTtlMs: number
+): Promise<void> {
+  const result = await readJsonBody(req, maxBodyBytes);
+  if (result.error) {
+    return sendError(res, result.error.status, result.error.code, result.error.message);
+  }
+  const parsed = registerTargetRequestSchema.safeParse(result.value);
+  if (!parsed.success) {
+    return sendError(res, 400, parsed.error.code, parsed.error.message);
+  }
+  const { clientName, profile } = parsed.data;
+  const id = randomUUID();
+  const secret = generateTargetSecret();
+  const pairingCode = generatePairingCode();
+  const now = Date.now();
+  const pairingCodeExpiresAt = now + pairingCodeTtlMs;
+  store.createTarget({
+    id,
+    secretHash: hashSecret(secret),
+    clientName,
+    profile,
+    channel: null,
+    pairingCode,
+    pairingCodeExpiresAt,
+    createdAt: now,
+    lastSeenAt: now,
+  });
+  const registration: TargetRegistration = { protocolVersion: PROTOCOL_VERSION, id, secret, pairingCode, pairingCodeExpiresAt };
+  return sendJson(res, 201, registration, { 'cache-control': 'no-store' });
+}
+
+async function heartbeatTarget(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: Store,
+  maxBodyBytes: number,
+  principal: Principal
+): Promise<void> {
+  const result = await readJsonBody(req, maxBodyBytes);
+  if (result.error) {
+    return sendError(res, result.error.status, result.error.code, result.error.message);
+  }
+  const parsed = heartbeatRequestSchema.safeParse(result.value);
+  if (!parsed.success) {
+    return sendError(res, 400, parsed.error.code, parsed.error.message);
+  }
+  store.touchTargetHeartbeat(principal.id, parsed.data.profile);
+  const response: HeartbeatResponse = { protocolVersion: PROTOCOL_VERSION, targetId: principal.id, channel: principal.channel };
+  return sendJson(res, 200, response);
+}
+
+function listPendingTargetsHandler(res: ServerResponse, store: Store): void {
+  const targets: PendingTarget[] = store.listPendingTargets().map((t) => ({
+    protocolVersion: PROTOCOL_VERSION,
+    id: t.id,
+    clientName: t.clientName,
+    profile: t.profile,
+    pairingCodeExpiresAt: t.pairingCodeExpiresAt,
+    createdAt: t.createdAt,
+    lastSeenAt: t.lastSeenAt,
+  }));
+  return sendJson(res, 200, { targets });
+}
+
+async function pairTargetHandler(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: Store,
+  maxBodyBytes: number,
+  targetId: string
+): Promise<void> {
+  const result = await readJsonBody(req, maxBodyBytes);
+  if (result.error) {
+    return sendError(res, result.error.status, result.error.code, result.error.message);
+  }
+  const parsed = pairTargetRequestSchema.safeParse(result.value);
+  if (!parsed.success) {
+    return sendError(res, 400, parsed.error.code, parsed.error.message);
+  }
+  const { pairingCode, channelId, channelName } = parsed.data;
+
+  const target = store.getTarget(targetId);
+  if (!target) {
+    return sendError(res, 404, 'target_not_found', `Target '${targetId}' not found`);
+  }
+  if (target.channel !== null) {
+    return sendError(res, 409, 'target_already_paired', `Target '${targetId}' is already paired; re-enroll it to retarget`);
+  }
+  if (target.pairingCode === null || target.pairingCodeExpiresAt === null || target.pairingCodeExpiresAt < Date.now()) {
+    return sendError(res, 410, 'pairing_code_expired', 'The pairing code has expired; re-enroll the target');
+  }
+  if (target.pairingCode !== pairingCode) {
+    return sendError(res, 400, 'invalid_pairing_code', 'The supplied pairing code does not match');
+  }
+
+  const channel: Channel = { protocolVersion: PROTOCOL_VERSION, id: channelId, name: channelName };
+  const outcome = store.pairTarget(targetId, channel);
+  if (outcome === 'target_not_found') {
+    return sendError(res, 404, 'target_not_found', `Target '${targetId}' not found`);
+  }
+  if (outcome === 'target_already_paired') {
+    return sendError(res, 409, 'target_already_paired', `Target '${targetId}' is already paired; re-enroll it to retarget`);
+  }
+  if (outcome === 'channel_exists') {
+    return sendError(res, 409, 'channel_exists', `Channel '${channelId}' already exists`);
+  }
+  return sendJson(res, 201, channel);
+}
+
+function getChannelProfileHandler(res: ServerResponse, store: Store, channelId: string): void {
+  if (!store.getChannel(channelId)) {
+    return sendError(res, 404, 'channel_not_found', `Channel '${channelId}' not found`);
+  }
+  const profile = store.getChannelProfile(channelId);
+  if (!profile) {
+    return sendError(res, 404, 'no_profile', `Channel '${channelId}' has no target profile yet`);
+  }
+  return sendJson(res, 200, profile);
 }
 
 function serveAdminUi(res: ServerResponse): void {

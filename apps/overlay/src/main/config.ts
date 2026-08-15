@@ -27,6 +27,19 @@ export interface OverlayConfig {
    * out. Left off by default so quitting is never surprising.
    */
   hideDockIcon: boolean;
+  enrollment: {
+    /** How often a pending or paired target reports its live profile. */
+    heartbeatIntervalMs: number;
+    /**
+     * The static parts of a `TargetProfile` (see @irudd-le/protocol): this
+     * content shell's own capabilities, not something measured per-session.
+     * `contentBox`, `devicePixelRatio` and `screenshot` are measured live
+     * from the renderer instead -- see enrollment.ts.
+     */
+    preferredIconSize: { min: number; max: number };
+    minimumTextSize: number;
+    features: string[];
+  };
 }
 
 export const config: OverlayConfig = {
@@ -50,4 +63,11 @@ export const config: OverlayConfig = {
 
   startInteractive: false,
   hideDockIcon: false,
+
+  enrollment: {
+    heartbeatIntervalMs: 20_000,
+    preferredIconSize: { min: 16, max: 48 },
+    minimumTextSize: 12,
+    features: [],
+  },
 };

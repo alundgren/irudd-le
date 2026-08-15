@@ -48,8 +48,43 @@ body[data-mode='interactive'] #local-setup:not([hidden]) {
 }
 
 #local-setup h1,
+#local-setup h2,
 #local-setup p {
   margin: 0;
+}
+
+#local-setup h2 {
+  font-size: 1em;
+}
+
+#local-setup section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#local-setup label {
+  font-size: 0.85em;
+  opacity: 0.85;
+}
+
+#local-setup input {
+  padding: 6px 8px;
+  border: 1px solid #6b5527;
+  border-radius: 4px;
+  background: #1b1309;
+  color: inherit;
+  font: inherit;
+}
+
+#pairing-code {
+  font-size: 1.6em;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+#enrollment-error:not([hidden]) {
+  color: #e8927c;
 }
 
 #local-setup button {

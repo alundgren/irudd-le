@@ -32,6 +32,50 @@ function publishableChannel(id = 'main', name = 'Main channel'): object {
   return { protocolVersion: 1, id, name };
 }
 
+function registerableProfile(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    version: 1,
+    contentBox: { width: 960, height: 540 },
+    devicePixelRatio: 2,
+    screenshot: { width: 1920, height: 1080 },
+    preferredIconSize: { min: 16, max: 48 },
+    minimumTextSize: 12,
+    background: { opaque: false },
+    features: [],
+    protocolVersion: 1,
+    ...overrides,
+  };
+}
+
+async function registerTarget(
+  base: string,
+  clientName = 'Living room PC',
+  profile: object = registerableProfile()
+): Promise<{ id: string; secret: string; pairingCode: string; pairingCodeExpiresAt: number }> {
+  const res = await fetch(new URL('/v1/targets', base), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ clientName, profile }),
+  });
+  assert.equal(res.status, 201);
+  return (await jsonBody(res)) as { id: string; secret: string; pairingCode: string; pairingCodeExpiresAt: number };
+}
+
+async function pairTarget(
+  base: string,
+  adminToken: string,
+  targetId: string,
+  pairingCode: string,
+  channelId: string,
+  channelName: string
+): Promise<Response> {
+  return fetch(new URL(`/v1/admin/targets/${targetId}/pair`, base), {
+    method: 'POST',
+    headers: jsonHeaders(adminToken),
+    body: JSON.stringify({ protocolVersion: 1, pairingCode, channelId, channelName }),
+  });
+}
+
 function publishableRevision(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     protocolVersion: 1,
@@ -554,6 +598,294 @@ test('an offline channel retains and accepts content across a restart', async ()
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a clean overlay registers as a pending target with no existing channel', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    const registered = await registerTarget(base, 'Living room PC');
+    assert.ok(registered.id);
+    assert.ok(registered.secret.startsWith('tgt_'));
+    assert.match(registered.pairingCode, /^\d{6}$/);
+
+    const listed = await fetch(new URL('/v1/admin/targets', base), { method: 'GET', headers: authHeader(ADMIN_SECRET) });
+    assert.equal(listed.status, 200);
+    const body = await jsonBody(listed);
+    const pending = (body.targets as Array<Record<string, unknown>>).find((t) => t.id === registered.id);
+    assert.ok(pending, 'registered target should be listed as pending');
+    assert.equal(pending!.clientName, 'Living room PC');
+    assert.deepEqual(pending!.profile, registerableProfile());
+    assert.equal('channel' in pending!, false);
+    // The admin list withholds the pairing code itself; only its expiry is visible.
+    assert.equal('pairingCode' in pending!, false);
+    assert.equal(pending!.pairingCodeExpiresAt, registered.pairingCodeExpiresAt);
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('a target authenticates heartbeats with its own secret, scoped to its own id', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    const target = await registerTarget(base);
+    const other = await registerTarget(base, 'Other PC');
+
+    const noAuth = await fetch(new URL(`/v1/targets/${target.id}/heartbeat`, base), {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ profile: registerableProfile() }),
+    });
+    assert.equal(noAuth.status, 401);
+
+    const wrongTarget = await fetch(new URL(`/v1/targets/${target.id}/heartbeat`, base), {
+      method: 'PUT',
+      headers: jsonHeaders(other.secret),
+      body: JSON.stringify({ profile: registerableProfile() }),
+    });
+    assert.equal(wrongTarget.status, 403);
+
+    // An admin credential is not a stand-in for a target's own identity.
+    const asAdmin = await fetch(new URL(`/v1/targets/${target.id}/heartbeat`, base), {
+      method: 'PUT',
+      headers: jsonHeaders(ADMIN_SECRET),
+      body: JSON.stringify({ profile: registerableProfile() }),
+    });
+    assert.equal(asAdmin.status, 403);
+
+    const ok = await fetch(new URL(`/v1/targets/${target.id}/heartbeat`, base), {
+      method: 'PUT',
+      headers: jsonHeaders(target.secret),
+      body: JSON.stringify({ profile: registerableProfile({ minimumTextSize: 14 }) }),
+    });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await jsonBody(ok), { protocolVersion: 1, targetId: target.id, channel: null });
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('pairing creates a channel whose profile matches the live measured metrics', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    const profile = registerableProfile({ contentBox: { width: 800, height: 480 } });
+    const target = await registerTarget(base, 'Living room PC', profile);
+
+    const paired = await pairTarget(base, ADMIN_SECRET, target.id, target.pairingCode, 'main', 'Main channel');
+    assert.equal(paired.status, 201);
+    assert.deepEqual(await jsonBody(paired), { protocolVersion: 1, id: 'main', name: 'Main channel' });
+
+    const reader = await mintToken(base, ADMIN_SECRET, 'reader', 'main', 'Overlay main');
+    const fetchedProfile = await fetch(new URL('/v1/channels/main/profile', base), { method: 'GET', headers: authHeader(reader.secret) });
+    assert.equal(fetchedProfile.status, 200);
+    assert.deepEqual(await jsonBody(fetchedProfile), profile);
+
+    const heartbeat = await fetch(new URL(`/v1/targets/${target.id}/heartbeat`, base), {
+      method: 'PUT',
+      headers: jsonHeaders(target.secret),
+      body: JSON.stringify({ profile }),
+    });
+    assert.deepEqual(await jsonBody(heartbeat), { protocolVersion: 1, targetId: target.id, channel: 'main' });
+
+    // Pairing removed it from the pending list.
+    const listed = await fetch(new URL('/v1/admin/targets', base), { method: 'GET', headers: authHeader(ADMIN_SECRET) });
+    const stillPending = (await jsonBody(listed)).targets.some((t: { id: string }) => t.id === target.id);
+    assert.equal(stillPending, false);
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('restarting the mailbox preserves an existing pairing', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'mailbox-target-restart-'));
+  const databasePath = path.join(dir, 'mailbox.db');
+  try {
+    const first = createMailbox({ ...baseOptions(), databasePath });
+    await first.start();
+    let target: { id: string; secret: string; pairingCode: string; pairingCodeExpiresAt: number };
+    try {
+      target = await registerTarget(first.url);
+      const paired = await pairTarget(first.url, ADMIN_SECRET, target.id, target.pairingCode, 'main', 'Main channel');
+      assert.equal(paired.status, 201);
+    } finally {
+      await first.stop();
+    }
+
+    const second = createMailbox({ ...baseOptions(), databasePath, adminBootstrapToken: undefined });
+    await second.start();
+    try {
+      const heartbeat = await fetch(new URL(`/v1/targets/${target.id}/heartbeat`, second.url), {
+        method: 'PUT',
+        headers: jsonHeaders(target.secret),
+        body: JSON.stringify({ profile: registerableProfile() }),
+      });
+      assert.equal(heartbeat.status, 200);
+      assert.deepEqual(await jsonBody(heartbeat), { protocolVersion: 1, targetId: target.id, channel: 'main' });
+    } finally {
+      await second.stop();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a second target cannot silently attach to an already-paired channel', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    const first = await registerTarget(base, 'Living room PC');
+    const firstPaired = await pairTarget(base, ADMIN_SECRET, first.id, first.pairingCode, 'main', 'Main channel');
+    assert.equal(firstPaired.status, 201);
+
+    const second = await registerTarget(base, 'Bedroom PC');
+    const secondAttempt = await pairTarget(base, ADMIN_SECRET, second.id, second.pairingCode, 'main', 'Main channel (again)');
+    assert.equal(secondAttempt.status, 409);
+    assert.equal((await jsonBody(secondAttempt)).code, 'channel_exists');
+
+    // The first target's pairing is untouched.
+    const heartbeat = await fetch(new URL(`/v1/targets/${first.id}/heartbeat`, base), {
+      method: 'PUT',
+      headers: jsonHeaders(first.secret),
+      body: JSON.stringify({ profile: registerableProfile() }),
+    });
+    assert.deepEqual(await jsonBody(heartbeat), { protocolVersion: 1, targetId: first.id, channel: 'main' });
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('re-pairing an already-paired target is rejected; retargeting requires explicit re-enrollment', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    const target = await registerTarget(base);
+    const firstPair = await pairTarget(base, ADMIN_SECRET, target.id, target.pairingCode, 'main', 'Main channel');
+    assert.equal(firstPair.status, 201);
+
+    // Retrying with the same (now-consumed) target id and code fails...
+    const retry = await pairTarget(base, ADMIN_SECRET, target.id, target.pairingCode, 'other', 'Other channel');
+    assert.equal(retry.status, 409);
+    assert.equal((await jsonBody(retry)).code, 'target_already_paired');
+
+    // ...but a fresh registration (explicit re-enrollment) can pair to a new channel.
+    const reEnrolled = await registerTarget(base, 'Living room PC (re-enrolled)');
+    const rePaired = await pairTarget(base, ADMIN_SECRET, reEnrolled.id, reEnrolled.pairingCode, 'other', 'Other channel');
+    assert.equal(rePaired.status, 201);
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('pairing rejects an unknown target and a wrong code', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    const missing = await pairTarget(base, ADMIN_SECRET, 'does-not-exist', '000000', 'main', 'Main');
+    assert.equal(missing.status, 404);
+    assert.equal((await jsonBody(missing)).code, 'target_not_found');
+
+    const target = await registerTarget(base);
+    const wrongCode = await pairTarget(base, ADMIN_SECRET, target.id, '000000', 'main', 'Main');
+    assert.equal(wrongCode.status, 400);
+    assert.equal((await jsonBody(wrongCode)).code, 'invalid_pairing_code');
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('pairing rejects an expired code', async () => {
+  const mailbox = createMailbox({ ...baseOptions(), pairingCodeTtlMs: 1 });
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    const target = await registerTarget(base);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const expired = await pairTarget(base, ADMIN_SECRET, target.id, target.pairingCode, 'main', 'Main');
+    assert.equal(expired.status, 410);
+    assert.equal((await jsonBody(expired)).code, 'pairing_code_expired');
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('a target credential cannot read or write channel routes it was never granted', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET, publishableChannel('main', 'Main'));
+    const target = await registerTarget(base);
+
+    const readChannel = await fetch(new URL('/v1/channels/main', base), { method: 'GET', headers: authHeader(target.secret) });
+    assert.equal(readChannel.status, 403);
+
+    const readProfile = await fetch(new URL('/v1/channels/main/profile', base), { method: 'GET', headers: authHeader(target.secret) });
+    assert.equal(readProfile.status, 403);
+
+    const readRevision = await fetch(new URL('/v1/channels/main/revisions/current', base), { method: 'GET', headers: authHeader(target.secret) });
+    assert.equal(readRevision.status, 403);
+
+    const publish = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(target.secret),
+      body: JSON.stringify(publishableRevision()),
+    });
+    assert.equal(publish.status, 403);
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('only admin can list pending targets or pair one; registration itself needs no credential', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    // Registration is the one /v1/ write that precedes authentication.
+    const target = await registerTarget(base);
+
+    await createChannel(base, ADMIN_SECRET, publishableChannel('other', 'Other'));
+    const reader = await mintToken(base, ADMIN_SECRET, 'reader', 'other', 'Overlay other');
+
+    const listAttempt = await fetch(new URL('/v1/admin/targets', base), { method: 'GET', headers: authHeader(reader.secret) });
+    assert.equal(listAttempt.status, 403);
+
+    const pairAttempt = await pairTarget(base, reader.secret, target.id, target.pairingCode, 'main', 'Main');
+    assert.equal(pairAttempt.status, 403);
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('rejects a malformed register-target request and an unpaired channel profile lookup', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    const badRegister = await fetch(new URL('/v1/targets', base), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clientName: '', profile: registerableProfile() }),
+    });
+    assert.equal(badRegister.status, 400);
+    assert.equal((await jsonBody(badRegister)).code, 'invalid_protocol_value');
+
+    await createChannel(base, ADMIN_SECRET, publishableChannel('direct', 'Directly created'));
+    const reader = await mintToken(base, ADMIN_SECRET, 'reader', 'direct', 'Overlay direct');
+    const noProfile = await fetch(new URL('/v1/channels/direct/profile', base), { method: 'GET', headers: authHeader(reader.secret) });
+    assert.equal(noProfile.status, 404);
+    assert.equal((await jsonBody(noProfile)).code, 'no_profile');
+  } finally {
+    await mailbox.stop();
   }
 });
 

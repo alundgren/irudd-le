@@ -1,18 +1,28 @@
 import { app, globalShortcut, type BrowserWindow } from 'electron';
 import { config } from './config';
 import { createOverlayWindow } from './overlay-window';
+import { EnrollmentManager } from './enrollment';
+import { loadEnrollment } from './enrollment-store';
 import { InteractionMode } from './interaction';
 import { registerIpc } from './ipc';
 import { UpdateManager } from './update';
 
+// A target with no channel yet has nothing useful to show at couch distance,
+// so a pending/unenrolled overlay always boots into interactive mode to
+// surface the first-run setup screen -- there is no sane default mailbox URL
+// to fall back to (it is Pi-hosted and operator-specific).
+const persistedEnrollment = loadEnrollment(app.getPath('userData'));
+const needsSetup = !persistedEnrollment || persistedEnrollment.channel === null;
+
 // `--start-interactive` boots straight into interactive mode, handy when you
 // want to poke at the UI without reaching for the shortcut.
 const startInteractive =
-  config.startInteractive || process.argv.includes('--start-interactive');
+  config.startInteractive || process.argv.includes('--start-interactive') || needsSetup;
 
 let win: BrowserWindow | null = null;
 let mode: InteractionMode | null = null;
 let updater: UpdateManager | null = null;
+let enrollment: EnrollmentManager | null = null;
 
 // One overlay is enough; a second copy would just fight for always-on-top.
 // Say so before exiting -- an instant silent exit is otherwise baffling.
@@ -69,19 +79,26 @@ app.whenReady().then(() => {
   win = createOverlayWindow();
   mode = new InteractionMode(win, startInteractive);
   updater = new UpdateManager(win);
-  registerIpc({ win, mode, updater });
+  enrollment = new EnrollmentManager(win, app.getPath('userData'));
+  registerIpc({ win, mode, updater, enrollment });
   registerShortcuts();
   updater.start();
 
   // Re-send the mode once the page is live, so a reload cannot leave the
-  // indicator out of sync with reality.
-  win.webContents.on('did-finish-load', () => mode?.broadcast());
+  // indicator out of sync with reality. Enrollment measures the content box
+  // from the same page, so it also waits until this point.
+  win.webContents.on('did-finish-load', () => {
+    mode?.broadcast();
+    enrollment?.start();
+  });
 
   win.on('closed', () => {
     win = null;
     mode = null;
     updater?.stop();
     updater = null;
+    enrollment?.stop();
+    enrollment = null;
   });
 }).catch((err: unknown) => {
   console.error('[overlay] failed to start:', err);
