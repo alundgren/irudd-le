@@ -30,6 +30,14 @@ revision visible.
 **Render status**: a target's observation of the candidate/current revision,
 dimensions, overflow, and activation result.
 
+**Credential**: a hashed, revocable mailbox bearer secret of one **kind** —
+`admin` (unscoped), `publisher`, or `reader` (each bound to one channel). The
+full secret is shown only once, at creation. See ADR-0004.
+
+**Principal**: the credential kind and channel a request authenticated as,
+used to decide whether it may act on a given channel. Avoid: user, identity —
+a credential is not tied to a human account.
+
 **Protocol**: the shared, runtime-validated contract. An unsupported protocol
 version fails explicitly; adapters reuse it and do not reproduce its types.
 
@@ -49,7 +57,9 @@ folders are never modified in place.
 - `packages/protocol`: versioned runtime schemas and all shared protocol types.
 - `apps/overlay`: Electron content shell, preload security boundary, packaging,
   launcher, setup/recovery shortcuts, and self-update.
-- `apps/mailbox`: future durable HTTP authority.
+- `apps/mailbox`: the durable HTTP authority. It also serves its own narrow,
+  unauthenticated-page/authenticated-API admin UI at `/admin` (see ADR-0004)
+  rather than a separate app.
 - `apps/upload-ui`: future universal direct-publish UI.
 - `packages/cli` and `packages/mcp`: future thin protocol clients/adapters.
 

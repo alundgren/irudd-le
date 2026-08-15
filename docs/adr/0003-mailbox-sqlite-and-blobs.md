@@ -59,15 +59,14 @@ without disturbing the existing current pointer. The red/green slice named
 "atomic failure" exercises this exact failure path through the public HTTP
 seam.
 
-## Authentication: opaque bearer tokens
+## Authentication: opaque bearer tokens (superseded by ADR-0004)
 
-MVP tokens are opaque — the mailbox only does a constant-time comparison
-against `MAILBOX_BEARER_TOKENS`. Scoped publisher/read/admin credentials
-arrive in #32; the API currently treats every token as a single authority,
-which is intentionally narrower than the eventual capability model. Tokens are
-required on every `/v1/*` endpoint, while `/healthz` and `/readyz` are open so
-that orchestrators and the in-image `HEALTHCHECK` probe can reach them without
-a credential.
+MVP tokens were opaque — the mailbox did a constant-time comparison against
+`MAILBOX_BEARER_TOKENS`, and every token was a single, unscoped authority.
+#32 replaced this with hashed, revocable, scoped credentials; see ADR-0004.
+Tokens are still required on every `/v1/*` endpoint, while `/healthz` and
+`/readyz` stay open so orchestrators and the in-image `HEALTHCHECK` probe can
+reach them without a credential.
 
 ## Versioning and errors
 

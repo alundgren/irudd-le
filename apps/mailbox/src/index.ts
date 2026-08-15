@@ -14,20 +14,12 @@ const DEFAULT_LISTEN_PORT = Number(process.env.MAILBOX_LISTEN_PORT ?? '8080');
 const ENV_MAX_BODY_BYTES = Number(process.env.MAILBOX_MAX_BODY_BYTES ?? String(DEFAULT_MAX_BODY_BYTES));
 
 if (require.main === module) {
-  const tokens = (process.env.MAILBOX_BEARER_TOKENS ?? '')
-    .split(',')
-    .map((t) => t.trim())
-    .filter((t) => t.length > 0);
-  if (tokens.length === 0) {
-    console.error('MAILBOX_BEARER_TOKENS is required (comma-separated tokens)');
-    process.exit(1);
-  }
   const databasePath = DEFAULT_DATABASE_PATH;
   const dataDir = path.dirname(databasePath);
   if (dataDir && dataDir !== '.') mkdirSync(dataDir, { recursive: true });
   const options: MailboxOptions = {
     databasePath,
-    bearerTokens: tokens,
+    adminBootstrapToken: process.env.MAILBOX_ADMIN_BOOTSTRAP_TOKEN,
     listen: { host: DEFAULT_LISTEN_HOST, port: DEFAULT_LISTEN_PORT },
     maxBodyBytes: Number.isFinite(ENV_MAX_BODY_BYTES) ? ENV_MAX_BODY_BYTES : undefined,
   };

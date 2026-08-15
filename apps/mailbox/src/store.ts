@@ -1,6 +1,19 @@
 import { DatabaseSync } from 'node:sqlite';
-import { PROTOCOL_VERSION, type Channel, type Revision } from '@irudd-le/protocol';
+import { PROTOCOL_VERSION, type Channel, type Revision, type TokenKind } from '@irudd-le/protocol';
 import { runMigrations } from './migrations';
+
+export interface TokenRecord {
+  id: string;
+  kind: TokenKind;
+  channel: string | null;
+  label: string;
+  createdAt: number;
+  revokedAt: number | null;
+}
+
+interface NewToken extends TokenRecord {
+  secretHash: string;
+}
 
 export class Store {
   private readonly db: DatabaseSync;
@@ -86,4 +99,77 @@ export class Store {
       assetIds: JSON.parse(row.assetIds) as string[],
     };
   }
+
+  createToken(token: NewToken): void {
+    this.db
+      .prepare(
+        'INSERT INTO tokens (id, kind, channel, label, secret_hash, createdAt, revokedAt) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(token.id, token.kind, token.channel, token.label, token.secretHash, token.createdAt, token.revokedAt);
+  }
+
+  listTokens(): TokenRecord[] {
+    const rows = this.db
+      .prepare('SELECT id, kind, channel, label, createdAt, revokedAt FROM tokens ORDER BY createdAt ASC')
+      .all() as unknown as TokenRow[];
+    return rows.map(toTokenRecord);
+  }
+
+  findActiveTokenByHash(secretHash: string): TokenRecord | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT id, kind, channel, label, createdAt, revokedAt FROM tokens WHERE secret_hash = ? AND revokedAt IS NULL'
+      )
+      .get(secretHash) as TokenRow | undefined;
+    if (!row) return undefined;
+    return toTokenRecord(row);
+  }
+
+  getToken(id: string): TokenRecord | undefined {
+    const row = this.db
+      .prepare('SELECT id, kind, channel, label, createdAt, revokedAt FROM tokens WHERE id = ?')
+      .get(id) as TokenRow | undefined;
+    if (!row) return undefined;
+    return toTokenRecord(row);
+  }
+
+  /** Soft revoke: the row (and its label) is kept for attribution, never deleted. */
+  revokeToken(id: string): 'not_found' | 'revoked' {
+    const row = this.db.prepare('SELECT revokedAt FROM tokens WHERE id = ?').get(id) as { revokedAt: number | null } | undefined;
+    if (!row) return 'not_found';
+    if (row.revokedAt === null) {
+      this.db.prepare('UPDATE tokens SET revokedAt = ? WHERE id = ?').run(Date.now(), id);
+    }
+    return 'revoked';
+  }
+
+  hasAnyTokenOfKind(kind: TokenKind): boolean {
+    const row = this.db.prepare('SELECT 1 AS hit FROM tokens WHERE kind = ? LIMIT 1').get(kind);
+    return row !== undefined;
+  }
+
+  countActiveTokensOfKind(kind: TokenKind): number {
+    const row = this.db.prepare('SELECT COUNT(*) AS n FROM tokens WHERE kind = ? AND revokedAt IS NULL').get(kind) as { n: number };
+    return row.n;
+  }
+}
+
+interface TokenRow {
+  id: string;
+  kind: string;
+  channel: string | null;
+  label: string;
+  createdAt: number;
+  revokedAt: number | null;
+}
+
+function toTokenRecord(row: TokenRow): TokenRecord {
+  return {
+    id: row.id,
+    kind: row.kind as TokenKind,
+    channel: row.channel,
+    label: row.label,
+    createdAt: row.createdAt,
+    revokedAt: row.revokedAt,
+  };
 }
