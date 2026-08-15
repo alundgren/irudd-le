@@ -116,6 +116,12 @@ export const protocolVersionSchema = schema<ProtocolVersion>((value) => {
   return PROTOCOL_VERSION;
 });
 
+/** A successful write acknowledgement with no resource payload. */
+export const protocolAcknowledgementSchema = schema<ProtocolVersion>((value) => {
+  const input = record(value, 'protocolAcknowledgement');
+  return protocolVersionSchema.parse(input.protocolVersion);
+});
+
 export interface Channel {
   protocolVersion: ProtocolVersion;
   id: string;
@@ -202,17 +208,26 @@ export const targetRegistrationSchema = schema<TargetRegistration>((value) => {
 
 export interface HeartbeatRequest {
   profile: TargetProfile;
+  capabilities: string[];
+  clientVersion: string;
 }
 
 export const heartbeatRequestSchema = schema<HeartbeatRequest>((value) => {
   const input = record(value, 'heartbeatRequest');
-  return { profile: targetProfileSchema.parse(input.profile) };
+  return {
+    profile: targetProfileSchema.parse(input.profile),
+    capabilities: arrayOfStrings(input.capabilities, 'heartbeatRequest.capabilities'),
+    clientVersion: boundedString(input.clientVersion, 'heartbeatRequest.clientVersion', 100),
+  };
 });
 
 export interface HeartbeatResponse {
   protocolVersion: ProtocolVersion;
   targetId: string;
   channel: string | null;
+  profileVersion: number;
+  profileChanged: boolean;
+  republishRecommended: boolean;
 }
 
 export const heartbeatResponseSchema = schema<HeartbeatResponse>((value) => {
@@ -224,6 +239,9 @@ export const heartbeatResponseSchema = schema<HeartbeatResponse>((value) => {
     protocolVersion: protocolVersionSchema.parse(input.protocolVersion),
     targetId: string(input.targetId, 'heartbeatResponse.targetId'),
     channel: input.channel === null ? null : channelId(input.channel, 'heartbeatResponse.channel'),
+    profileVersion: integer(input.profileVersion, 'heartbeatResponse.profileVersion', 1),
+    profileChanged: boolean(input.profileChanged, 'heartbeatResponse.profileChanged'),
+    republishRecommended: boolean(input.republishRecommended, 'heartbeatResponse.republishRecommended'),
   };
 });
 
@@ -307,12 +325,15 @@ export const revisionPublicationSchema = schema<RevisionPublication>((value) => 
 export interface RenderStatus {
   protocolVersion: ProtocolVersion;
   targetId: string;
+  attemptId: string;
+  attemptStartedAt: number;
   profileVersion: number;
   currentRevisionId: string | null;
   candidateRevisionId: string | null;
   rendered: { width: number; height: number; scrollWidth: number; scrollHeight: number };
   overflow: { horizontal: boolean; vertical: boolean };
   activation: 'active' | 'rejected';
+  failureReason: string | null;
 }
 
 export const renderStatusSchema = schema<RenderStatus>((value) => {
@@ -322,15 +343,78 @@ export const renderStatusSchema = schema<RenderStatus>((value) => {
   if (input.currentRevisionId !== null && typeof input.currentRevisionId !== 'string') throw invalid('renderStatus.currentRevisionId', 'must be a string or null');
   if (input.candidateRevisionId !== null && typeof input.candidateRevisionId !== 'string') throw invalid('renderStatus.candidateRevisionId', 'must be a string or null');
   if (input.activation !== 'active' && input.activation !== 'rejected') throw invalid('renderStatus.activation', 'must be active or rejected');
+  if (input.failureReason !== null && typeof input.failureReason !== 'string') throw invalid('renderStatus.failureReason', 'must be a string or null');
+  if (input.activation === 'active' && (input.currentRevisionId === null || input.currentRevisionId !== input.candidateRevisionId || input.failureReason !== null)) {
+    throw invalid('renderStatus', 'active observations require the candidate to be the visible revision and no failure reason');
+  }
+  if (input.activation === 'rejected' && (typeof input.failureReason !== 'string' || input.failureReason.length === 0)) {
+    throw invalid('renderStatus.failureReason', 'must explain a rejected activation');
+  }
   return {
     protocolVersion: protocolVersionSchema.parse(input.protocolVersion),
     targetId: string(input.targetId, 'renderStatus.targetId'),
+    attemptId: boundedString(input.attemptId, 'renderStatus.attemptId', 100),
+    attemptStartedAt: integer(input.attemptStartedAt, 'renderStatus.attemptStartedAt', 0),
     profileVersion: integer(input.profileVersion, 'renderStatus.profileVersion', 1),
     currentRevisionId: input.currentRevisionId,
     candidateRevisionId: input.candidateRevisionId,
     rendered: { width: number(rendered.width, 'renderStatus.rendered.width', 0), height: number(rendered.height, 'renderStatus.rendered.height', 0), scrollWidth: number(rendered.scrollWidth, 'renderStatus.rendered.scrollWidth', 0), scrollHeight: number(rendered.scrollHeight, 'renderStatus.rendered.scrollHeight', 0) },
     overflow: { horizontal: boolean(overflow.horizontal, 'renderStatus.overflow.horizontal'), vertical: boolean(overflow.vertical, 'renderStatus.overflow.vertical') },
     activation: input.activation,
+    failureReason: input.failureReason,
+  };
+});
+
+/** The live-or-last-known result of the canonical get_render_status operation. */
+export interface RenderStatusObservation extends RenderStatus {
+  observedAt: number;
+  online: boolean;
+}
+
+export const renderStatusObservationSchema = schema<RenderStatusObservation>((value) => {
+  const input = record(value, 'renderStatusObservation');
+  const status = renderStatusSchema.parse(input);
+  return {
+    ...status,
+    observedAt: integer(input.observedAt, 'renderStatusObservation.observedAt', 0),
+    online: boolean(input.online, 'renderStatusObservation.online'),
+  };
+});
+
+/** The live-or-last-known result of the canonical get_target operation. */
+export interface TargetStatus {
+  protocolVersion: ProtocolVersion;
+  id: string;
+  channel: string;
+  clientName: string;
+  profile: TargetProfile;
+  capabilities: string[];
+  clientVersion: string;
+  lastSeenAt: number;
+  online: boolean;
+  profileChangedAt: number | null;
+  republishRecommended: boolean;
+}
+
+export const targetStatusSchema = schema<TargetStatus>((value) => {
+  const input = record(value, 'targetStatus');
+  if (input.profileChangedAt !== null && input.profileChangedAt !== undefined && typeof input.profileChangedAt !== 'number') {
+    throw invalid('targetStatus.profileChangedAt', 'must be a number or null');
+  }
+  return {
+    protocolVersion: protocolVersionSchema.parse(input.protocolVersion),
+    id: string(input.id, 'targetStatus.id'),
+    channel: channelId(input.channel, 'targetStatus.channel'),
+    clientName: string(input.clientName, 'targetStatus.clientName'),
+    profile: targetProfileSchema.parse(input.profile),
+    capabilities: arrayOfStrings(input.capabilities, 'targetStatus.capabilities'),
+    clientVersion: boundedString(input.clientVersion, 'targetStatus.clientVersion', 100),
+    lastSeenAt: integer(input.lastSeenAt, 'targetStatus.lastSeenAt', 0),
+    online: boolean(input.online, 'targetStatus.online'),
+    profileChangedAt: input.profileChangedAt === null || input.profileChangedAt === undefined
+      ? null
+      : integer(input.profileChangedAt, 'targetStatus.profileChangedAt', 0),
+    republishRecommended: boolean(input.republishRecommended, 'targetStatus.republishRecommended'),
   };
 });
 

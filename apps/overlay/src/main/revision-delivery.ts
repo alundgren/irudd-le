@@ -1,8 +1,9 @@
 import { ipcMain, type BrowserWindow } from 'electron';
-import type { Revision, TargetProfile } from '@irudd-le/protocol';
+import { PROTOCOL_VERSION, type RenderStatus, type Revision, type TargetProfile } from '@irudd-le/protocol';
 import type { EnrollmentState } from './enrollment-store';
 import { loadCachedRevision, saveCachedRevision } from './revision-cache';
 import { fetchChannelProfile, fetchCurrentRevision, openRevisionEvents } from './revision-client';
+import { reportRenderStatus } from './enrollment-client';
 
 const ACTIVATION_BUDGET_MS = 5_000;
 const RECONNECT_DELAY_MS = 2_000;
@@ -10,6 +11,7 @@ const RECONNECT_DELAY_MS = 2_000;
 interface DeliveryContext {
   mailboxUrl: string;
   channel: string;
+  targetId: string;
   secret: string;
   cacheKey: string;
 }
@@ -19,6 +21,7 @@ interface StageResult {
   revisionId: string;
   staged: boolean;
   error?: string;
+  metrics?: RenderMetrics;
 }
 
 interface ActivationResult {
@@ -26,6 +29,14 @@ interface ActivationResult {
   revisionId: string;
   activated: boolean;
   error?: string;
+  metrics?: RenderMetrics;
+}
+
+interface RenderMetrics {
+  width: number;
+  height: number;
+  scrollWidth: number;
+  scrollHeight: number;
 }
 
 /** Events are prompts; each connection starts with the durable revision. */
@@ -36,6 +47,9 @@ export class RevisionDelivery {
   private readonly activeAttempts = new Set<string>();
   private controller: AbortController | null = null;
   private contextKey: string | null = null;
+  private currentRevisionId: string | null = null;
+  private lastMetrics: RenderMetrics | null = null;
+  private lastState: EnrollmentState | null = null;
 
   constructor(private readonly win: BrowserWindow, private readonly userDataDir: string) {}
 
@@ -54,10 +68,12 @@ export class RevisionDelivery {
   }
 
   update(state: EnrollmentState | null): void {
+    this.lastState = state;
     if (this.stopped || !state?.channel) return;
     const context: DeliveryContext = {
       mailboxUrl: state.mailboxUrl,
       channel: state.channel,
+      targetId: state.targetId,
       secret: state.secret,
       cacheKey: JSON.stringify({ mailboxUrl: state.mailboxUrl, targetId: state.targetId, channel: state.channel }),
     };
@@ -73,6 +89,13 @@ export class RevisionDelivery {
     void this.connect(context, generation, this.controller.signal, cached?.channel === context.channel ? cached : null);
   }
 
+  /** A heartbeat observed a new profile, so restart delivery with its version. */
+  refresh(): void {
+    if (this.stopped || !this.lastState) return;
+    this.contextKey = null;
+    this.update(this.lastState);
+  }
+
   private async connect(
     context: DeliveryContext,
     generation: number,
@@ -81,7 +104,7 @@ export class RevisionDelivery {
   ): Promise<void> {
     if (cached) {
       try {
-        await this.activate(cached, false, context.cacheKey, generation);
+        await this.activate(cached, false, context, { version: cached.profileVersion, contentBox: { width: 1, height: 1 } } as TargetProfile, generation);
       } catch (error: unknown) {
         this.report('cached revision rejected', error);
       }
@@ -93,7 +116,7 @@ export class RevisionDelivery {
         // Subscribe before the durable read. Any publication that lands
         // between these calls is buffered by the established SSE response.
         events = await openRevisionEvents(context.mailboxUrl, context.channel, context.secret, signal);
-        await this.refresh(context, profile, signal, generation);
+        await this.refreshRevision(context, profile, signal, generation);
         await this.consumeEvents(events, context, profile, signal, generation);
       } catch (error: unknown) {
         await events?.body?.cancel().catch(() => undefined);
@@ -104,20 +127,40 @@ export class RevisionDelivery {
     }
   }
 
-  private async refresh(
+  private async refreshRevision(
     context: DeliveryContext,
     profile: TargetProfile,
     signal: AbortSignal,
     generation: number
   ): Promise<void> {
+    let revision: Revision;
     try {
-      const revision = await fetchCurrentRevision(context.mailboxUrl, context.channel, context.secret, signal);
-      this.validateCandidate(revision, context.channel, profile);
-      await this.activate(revision, true, context.cacheKey, generation);
+      revision = await fetchCurrentRevision(context.mailboxUrl, context.channel, context.secret, signal);
     } catch (error: unknown) {
       if (isNoCurrentRevision(error)) return;
       throw error;
     }
+    try {
+      this.validateCandidate(revision, context.channel, profile);
+    } catch (error: unknown) {
+      // Validation is part of activation: record the durable candidate even
+      // when it never reaches the renderer, so an agent can distinguish it
+      // from the revision still visible on the target.
+      const startedAt = Date.now();
+      await this.recordObservation(
+        context,
+        this.currentRevisionId,
+        revision.id,
+        profile.version,
+        `${generation}:validation:${++this.nextAttempt}`,
+        startedAt,
+        this.lastMetrics ?? this.metricsFor(profile),
+        'rejected',
+        describeError(error)
+      );
+      throw error;
+    }
+    await this.activate(revision, true, context, profile, generation);
   }
 
   private async consumeEvents(
@@ -139,7 +182,7 @@ export class RevisionDelivery {
         while (boundary >= 0) {
           const event = pending.slice(0, boundary);
           pending = pending.slice(boundary + 2);
-          if (event.startsWith('event: revision\n')) await this.refresh(context, profile, signal, generation);
+          if (event.startsWith('event: revision\n')) await this.refreshRevision(context, profile, signal, generation);
           boundary = pending.indexOf('\n\n');
         }
       }
@@ -158,22 +201,53 @@ export class RevisionDelivery {
     if (revision.assetIds.length > 0) throw new Error(`Candidate '${revision.id}' requires unavailable staged assets`);
   }
 
-  private async activate(revision: Revision, persist: boolean, cacheKey: string, generation: number): Promise<void> {
+  private async activate(
+    revision: Revision,
+    persist: boolean,
+    context: DeliveryContext,
+    profile: TargetProfile,
+    generation: number
+  ): Promise<void> {
     if (!this.isCurrent(generation)) throw new Error(`Candidate '${revision.id}' was superseded before staging`);
     const startedAt = Date.now();
     const attemptId = `${generation}:${++this.nextAttempt}`;
+    let stagedMetrics: RenderMetrics | undefined;
     this.activeAttempts.add(attemptId);
     try {
       const staged = await this.awaitStage(attemptId, revision, startedAt + ACTIVATION_BUDGET_MS);
+      stagedMetrics = staged.metrics;
       if (!staged.staged) throw new Error(staged.error ?? `Candidate '${revision.id}' was rejected by the renderer`);
       if (!this.isCurrent(generation)) throw new Error(`Candidate '${revision.id}' was superseded before activation`);
+      if (Date.now() - startedAt > ACTIVATION_BUDGET_MS) {
+        throw new Error(`Candidate '${revision.id}' exceeded its activation budget before commit`);
+      }
 
       const result = await this.awaitCommit(attemptId, revision, startedAt + ACTIVATION_BUDGET_MS);
       if (!result.activated) throw new Error(result.error ?? `Candidate '${revision.id}' was rejected by the renderer`);
-      if (!this.isCurrent(generation) || Date.now() - startedAt > ACTIVATION_BUDGET_MS) {
-        throw new Error(`Candidate '${revision.id}' was superseded or exceeded its activation budget`);
+      const metrics = result.metrics ?? staged.metrics ?? this.metricsFor(profile);
+      this.currentRevisionId = revision.id;
+      this.lastMetrics = metrics;
+      await this.recordObservation(context, revision.id, revision.id, revision.profileVersion, attemptId, startedAt, metrics, 'active', null);
+      if (persist) {
+        try {
+          saveCachedRevision(this.userDataDir, context.cacheKey, revision);
+        } catch (error: unknown) {
+          this.report('could not cache activated revision', error);
+        }
       }
-      if (persist) saveCachedRevision(this.userDataDir, cacheKey, revision);
+    } catch (error: unknown) {
+      await this.recordObservation(
+        context,
+        this.currentRevisionId,
+        revision.id,
+        profile.version,
+        attemptId,
+        startedAt,
+        stagedMetrics ?? this.lastMetrics ?? this.metricsFor(profile),
+        'rejected',
+        describeError(error)
+      );
+      throw error;
     } finally {
       this.activeAttempts.delete(attemptId);
       this.sendDiscard(attemptId);
@@ -241,6 +315,46 @@ export class RevisionDelivery {
     // #24 owns durable external render-status reporting.
     console.warn(`[overlay] ${message}:`, error instanceof Error ? error.message : error);
   }
+
+  private metricsFor(profile: TargetProfile): RenderMetrics {
+    return {
+      width: profile.contentBox.width,
+      height: profile.contentBox.height,
+      scrollWidth: profile.contentBox.width,
+      scrollHeight: profile.contentBox.height,
+    };
+  }
+
+  private async recordObservation(
+    context: DeliveryContext,
+    currentRevisionId: string | null,
+    candidateRevisionId: string,
+    profileVersion: number,
+    attemptId: string,
+    attemptStartedAt: number,
+    metrics: RenderMetrics,
+    activation: RenderStatus['activation'],
+    failureReason: string | null
+  ): Promise<void> {
+    const status: RenderStatus = {
+      protocolVersion: PROTOCOL_VERSION,
+      targetId: context.targetId,
+      attemptId,
+      attemptStartedAt,
+      profileVersion,
+      currentRevisionId,
+      candidateRevisionId,
+      rendered: metrics,
+      overflow: { horizontal: metrics.scrollWidth > metrics.width, vertical: metrics.scrollHeight > metrics.height },
+      activation,
+      failureReason,
+    };
+    try {
+      await reportRenderStatus(context.mailboxUrl, context.targetId, context.secret, status);
+    } catch (error: unknown) {
+      this.report('could not report render observation', error);
+    }
+  }
 }
 
 function isNoCurrentRevision(error: unknown): boolean {
@@ -259,6 +373,10 @@ function isStageResult(value: unknown): value is StageResult {
   const result = value as Record<string, unknown>;
   return typeof result.attemptId === 'string' && typeof result.revisionId === 'string' && typeof result.staged === 'boolean' &&
     (result.error === undefined || typeof result.error === 'string');
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : 'Unknown activation failure';
 }
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {

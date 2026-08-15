@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { PROTOCOL_VERSION, type Channel, type Revision, type TargetProfile, type TokenKind } from '@irudd-le/protocol';
+import { PROTOCOL_VERSION, type Channel, type RenderStatus, type Revision, type TargetProfile, type TokenKind } from '@irudd-le/protocol';
 import { runMigrations } from './migrations';
 
 export interface TokenRecord {
@@ -24,6 +24,10 @@ export interface TargetRecord {
   pairingCodeExpiresAt: number | null;
   createdAt: number;
   lastSeenAt: number;
+  capabilities: string[];
+  clientVersion: string;
+  profileChangedAt: number | null;
+  republishRecommended: boolean;
 }
 
 interface NewTarget extends TargetRecord {
@@ -31,6 +35,11 @@ interface NewTarget extends TargetRecord {
 }
 
 export type PairTargetResult = 'paired' | 'target_not_found' | 'target_already_paired' | 'channel_exists';
+export type RenderStatusResult = 'recorded' | 'stale_profile' | 'stale_observation' | 'unknown_revision';
+
+export interface StoredRenderStatus extends RenderStatus {
+  observedAt: number;
+}
 
 export class Store {
   private readonly db: DatabaseSync;
@@ -188,8 +197,9 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO targets
-           (id, secret_hash, client_name, profile, channel, pairing_code, pairing_code_expires_at, createdAt, lastSeenAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           (id, secret_hash, client_name, profile, channel, pairing_code, pairing_code_expires_at, createdAt, lastSeenAt,
+            capabilities, client_version, profile_changed_at, republish_recommended)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         target.id,
@@ -200,7 +210,11 @@ export class Store {
         target.pairingCode,
         target.pairingCodeExpiresAt,
         target.createdAt,
-        target.lastSeenAt
+        target.lastSeenAt,
+        JSON.stringify(target.capabilities),
+        target.clientVersion,
+        target.profileChangedAt,
+        Number(target.republishRecommended)
       );
   }
 
@@ -218,11 +232,139 @@ export class Store {
     return toTargetRecord(row);
   }
 
-  /** Updates the live-reported profile and liveness timestamp; never touches pairing state. */
-  touchTargetHeartbeat(id: string, profile: TargetProfile): void {
-    this.db
-      .prepare('UPDATE targets SET profile = ?, lastSeenAt = ? WHERE id = ?')
-      .run(JSON.stringify(profile), Date.now(), id);
+  /**
+   * The mailbox owns profile versions. A target may send a resized profile
+   * after restart, so accepting a client-owned counter would let it move
+   * backwards; instead, materially different measurements advance the
+   * durable version here.
+   */
+  touchTargetHeartbeat(
+    id: string,
+    profile: TargetProfile,
+    capabilities: string[],
+    clientVersion: string
+  ): { profile: TargetProfile; profileChanged: boolean; republishRecommended: boolean } {
+    const target = this.getTarget(id);
+    if (!target) throw new Error(`Target '${id}' disappeared while heartbeating`);
+    const now = Date.now();
+    const profileChanged = !sameProfileMeasurement(target.profile, profile);
+    const currentProfile = profileChanged
+      ? { ...profile, version: target.profile.version + 1 }
+      : target.profile;
+    const republishRecommended = profileChanged && target.channel !== null
+      ? true
+      : target.republishRecommended;
+
+    this.db.exec('BEGIN');
+    try {
+      this.db
+        .prepare(
+          `UPDATE targets
+              SET profile = ?, lastSeenAt = ?, capabilities = ?, client_version = ?,
+                  profile_changed_at = ?, republish_recommended = ?
+            WHERE id = ?`
+        )
+        .run(
+          JSON.stringify(currentProfile),
+          now,
+          JSON.stringify(capabilities),
+          clientVersion,
+          profileChanged ? now : target.profileChangedAt,
+          Number(republishRecommended),
+          id
+        );
+      if (profileChanged && target.channel !== null) {
+        this.db
+          .prepare('UPDATE channel_profiles SET profile = ?, updatedAt = ? WHERE channel = ?')
+          .run(JSON.stringify(currentProfile), now, target.channel);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return { profile: currentProfile, profileChanged, republishRecommended };
+  }
+
+  getTargetByChannel(channel: string): TargetRecord | undefined {
+    const row = this.db.prepare(`${SELECT_TARGET_BY} channel = ?`).get(channel) as TargetRow | undefined;
+    return row ? toTargetRecord(row) : undefined;
+  }
+
+  recordRenderStatus(status: RenderStatus): RenderStatusResult {
+    const target = this.getTarget(status.targetId);
+    if (!target || target.channel === null) return 'stale_profile';
+    if (target.profile.version !== status.profileVersion) return 'stale_profile';
+    if (!this.revisionBelongsToChannel(target.channel, status.candidateRevisionId) || !this.revisionBelongsToChannel(target.channel, status.currentRevisionId)) {
+      return 'unknown_revision';
+    }
+    const previous = this.db
+      .prepare('SELECT attempt_started_at AS attemptStartedAt FROM render_statuses WHERE target_id = ?')
+      .get(status.targetId) as { attemptStartedAt: number } | undefined;
+    if (previous && previous.attemptStartedAt > status.attemptStartedAt) return 'stale_observation';
+
+    const observedAt = Date.now();
+    this.db.exec('BEGIN');
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO render_statuses
+             (target_id, attempt_id, attempt_started_at, profile_version, current_revision_id, candidate_revision_id,
+              rendered, overflow, activation, failure_reason, observed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(target_id) DO UPDATE SET
+             attempt_id = excluded.attempt_id, attempt_started_at = excluded.attempt_started_at,
+             profile_version = excluded.profile_version, current_revision_id = excluded.current_revision_id,
+             candidate_revision_id = excluded.candidate_revision_id, rendered = excluded.rendered,
+             overflow = excluded.overflow, activation = excluded.activation, failure_reason = excluded.failure_reason,
+             observed_at = excluded.observed_at`
+        )
+        .run(
+          status.targetId, status.attemptId, status.attemptStartedAt, status.profileVersion,
+          status.currentRevisionId, status.candidateRevisionId, JSON.stringify(status.rendered), JSON.stringify(status.overflow),
+          status.activation, status.failureReason, observedAt
+        );
+      if (status.activation === 'active') {
+        this.db.prepare('UPDATE targets SET republish_recommended = 0 WHERE id = ?').run(status.targetId);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return 'recorded';
+  }
+
+  getRenderStatus(targetId: string): StoredRenderStatus | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT target_id AS targetId, attempt_id AS attemptId, attempt_started_at AS attemptStartedAt,
+                profile_version AS profileVersion, current_revision_id AS currentRevisionId,
+                candidate_revision_id AS candidateRevisionId, rendered, overflow, activation,
+                failure_reason AS failureReason, observed_at AS observedAt
+           FROM render_statuses WHERE target_id = ?`
+      )
+      .get(targetId) as RenderStatusRow | undefined;
+    if (!row) return undefined;
+    return {
+      protocolVersion: PROTOCOL_VERSION,
+      targetId: row.targetId,
+      attemptId: row.attemptId,
+      attemptStartedAt: row.attemptStartedAt,
+      profileVersion: row.profileVersion,
+      currentRevisionId: row.currentRevisionId,
+      candidateRevisionId: row.candidateRevisionId,
+      rendered: JSON.parse(row.rendered) as RenderStatus['rendered'],
+      overflow: JSON.parse(row.overflow) as RenderStatus['overflow'],
+      activation: row.activation as RenderStatus['activation'],
+      failureReason: row.failureReason,
+      observedAt: row.observedAt,
+    };
+  }
+
+  private revisionBelongsToChannel(channel: string, revisionId: string | null): boolean {
+    if (revisionId === null) return true;
+    return this.db.prepare('SELECT 1 AS hit FROM revisions WHERE channel = ? AND id = ?').get(channel, revisionId) !== undefined;
   }
 
   listPendingTargets(): TargetRecord[] {
@@ -315,19 +457,25 @@ interface TargetRow {
   pairingCodeExpiresAt: number | null;
   createdAt: number;
   lastSeenAt: number;
+  capabilities: string;
+  clientVersion: string;
+  profileChangedAt: number | null;
+  republishRecommended: number;
 }
 
 const SELECT_TARGET = `
   SELECT id, client_name AS clientName, profile, channel,
          pairing_code AS pairingCode, pairing_code_expires_at AS pairingCodeExpiresAt,
-         createdAt, lastSeenAt
+         createdAt, lastSeenAt, capabilities, client_version AS clientVersion,
+         profile_changed_at AS profileChangedAt, republish_recommended AS republishRecommended
     FROM targets
    WHERE id = ?`;
 
 const SELECT_TARGET_BY = `
   SELECT id, client_name AS clientName, profile, channel,
          pairing_code AS pairingCode, pairing_code_expires_at AS pairingCodeExpiresAt,
-         createdAt, lastSeenAt
+         createdAt, lastSeenAt, capabilities, client_version AS clientVersion,
+         profile_changed_at AS profileChangedAt, republish_recommended AS republishRecommended
     FROM targets
    WHERE `;
 
@@ -341,5 +489,29 @@ function toTargetRecord(row: TargetRow): TargetRecord {
     pairingCodeExpiresAt: row.pairingCodeExpiresAt,
     createdAt: row.createdAt,
     lastSeenAt: row.lastSeenAt,
+    capabilities: JSON.parse(row.capabilities) as string[],
+    clientVersion: row.clientVersion,
+    profileChangedAt: row.profileChangedAt,
+    republishRecommended: Boolean(row.republishRecommended),
   };
+}
+
+interface RenderStatusRow {
+  targetId: string;
+  attemptId: string;
+  attemptStartedAt: number;
+  profileVersion: number;
+  currentRevisionId: string | null;
+  candidateRevisionId: string | null;
+  rendered: string;
+  overflow: string;
+  activation: string;
+  failureReason: string | null;
+  observedAt: number;
+}
+
+function sameProfileMeasurement(current: TargetProfile, reported: TargetProfile): boolean {
+  const { version: _currentVersion, ...currentMeasurement } = current;
+  const { version: _reportedVersion, ...reportedMeasurement } = reported;
+  return JSON.stringify(currentMeasurement) === JSON.stringify(reportedMeasurement);
 }

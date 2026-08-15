@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import test from 'node:test';
 
-import type { TargetProfile } from '@irudd-le/protocol';
-import { EnrollmentApiError, heartbeat, registerTarget } from './enrollment-client';
+import type { RenderStatus, TargetProfile } from '@irudd-le/protocol';
+import { EnrollmentApiError, heartbeat, registerTarget, reportRenderStatus } from './enrollment-client';
 
 const PROFILE: TargetProfile = {
   version: 1,
@@ -68,14 +68,41 @@ test('heartbeat sends the target secret as a bearer token and reports the channe
       assert.equal(req.method, 'PUT');
       assert.equal(req.url, '/v1/targets/target-1/heartbeat');
       assert.equal(req.headers.authorization, 'Bearer tgt_x');
-      assert.deepEqual(body, { profile: PROFILE });
+      assert.deepEqual(body, { profile: PROFILE, capabilities: ['render-status'], clientVersion: '0.1.1' });
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ protocolVersion: 1, targetId: 'target-1', channel: 'main' }));
+      res.end(JSON.stringify({ protocolVersion: 1, targetId: 'target-1', channel: 'main', profileVersion: 1, profileChanged: false, republishRecommended: false }));
     },
     async (url) => {
-      const response = await heartbeat(url, 'target-1', 'tgt_x', PROFILE);
-      assert.deepEqual(response, { protocolVersion: 1, targetId: 'target-1', channel: 'main' });
+      const response = await heartbeat(url, 'target-1', 'tgt_x', PROFILE, ['render-status'], '0.1.1');
+      assert.deepEqual(response, { protocolVersion: 1, targetId: 'target-1', channel: 'main', profileVersion: 1, profileChanged: false, republishRecommended: false });
     }
+  );
+});
+
+test('accepts the mailbox acknowledgement after reporting render status', async () => {
+  const status: RenderStatus = {
+    protocolVersion: 1,
+    targetId: 'target-1',
+    attemptId: 'activation-1',
+    attemptStartedAt: 1,
+    profileVersion: 1,
+    currentRevisionId: 'rev-001',
+    candidateRevisionId: 'rev-001',
+    rendered: { width: 960, height: 540, scrollWidth: 960, scrollHeight: 540 },
+    overflow: { horizontal: false, vertical: false },
+    activation: 'active',
+    failureReason: null,
+  };
+  await withMockMailbox(
+    (req, res, body) => {
+      assert.equal(req.method, 'PUT');
+      assert.equal(req.url, '/v1/targets/target-1/render-status');
+      assert.equal(req.headers.authorization, 'Bearer tgt_x');
+      assert.deepEqual(body, status);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ protocolVersion: 1 }));
+    },
+    (url) => reportRenderStatus(url, 'target-1', 'tgt_x', status)
   );
 });
 
@@ -87,7 +114,7 @@ test('surfaces a mailbox error response as a typed EnrollmentApiError', async ()
     },
     async (url) => {
       await assert.rejects(
-        () => heartbeat(url, 'target-1', 'tgt_x', PROFILE),
+        () => heartbeat(url, 'target-1', 'tgt_x', PROFILE, ['render-status'], '0.1.1'),
         (error: unknown) =>
           error instanceof EnrollmentApiError &&
           error.status === 410 &&

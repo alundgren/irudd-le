@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { createMailbox, type MailboxOptions } from './index';
+import { TARGET_ONLINE_WINDOW_MS } from './mailbox';
 
 const ADMIN_SECRET = 'test-admin';
 
@@ -45,6 +46,10 @@ function registerableProfile(overrides: Record<string, unknown> = {}): Record<st
     protocolVersion: 1,
     ...overrides,
   };
+}
+
+function heartbeatPayload(profile: object): object {
+  return { profile, capabilities: ['render-status'], clientVersion: '0.1.1' };
 }
 
 async function registerTarget(
@@ -754,14 +759,14 @@ test('a target authenticates heartbeats with its own secret, scoped to its own i
     const noAuth = await fetch(new URL(`/v1/targets/${target.id}/heartbeat`, base), {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ profile: registerableProfile() }),
+      body: JSON.stringify(heartbeatPayload(registerableProfile())),
     });
     assert.equal(noAuth.status, 401);
 
     const wrongTarget = await fetch(new URL(`/v1/targets/${target.id}/heartbeat`, base), {
       method: 'PUT',
       headers: jsonHeaders(other.secret),
-      body: JSON.stringify({ profile: registerableProfile() }),
+      body: JSON.stringify(heartbeatPayload(registerableProfile())),
     });
     assert.equal(wrongTarget.status, 403);
 
@@ -769,17 +774,17 @@ test('a target authenticates heartbeats with its own secret, scoped to its own i
     const asAdmin = await fetch(new URL(`/v1/targets/${target.id}/heartbeat`, base), {
       method: 'PUT',
       headers: jsonHeaders(ADMIN_SECRET),
-      body: JSON.stringify({ profile: registerableProfile() }),
+      body: JSON.stringify(heartbeatPayload(registerableProfile())),
     });
     assert.equal(asAdmin.status, 403);
 
     const ok = await fetch(new URL(`/v1/targets/${target.id}/heartbeat`, base), {
       method: 'PUT',
       headers: jsonHeaders(target.secret),
-      body: JSON.stringify({ profile: registerableProfile({ minimumTextSize: 14 }) }),
+      body: JSON.stringify(heartbeatPayload(registerableProfile({ minimumTextSize: 14 }))),
     });
     assert.equal(ok.status, 200);
-    assert.deepEqual(await jsonBody(ok), { protocolVersion: 1, targetId: target.id, channel: null });
+    assert.deepEqual(await jsonBody(ok), { protocolVersion: 1, targetId: target.id, channel: null, profileVersion: 2, profileChanged: true, republishRecommended: false });
   } finally {
     await mailbox.stop();
   }
@@ -805,14 +810,181 @@ test('pairing creates a channel whose profile matches the live measured metrics'
     const heartbeat = await fetch(new URL(`/v1/targets/${target.id}/heartbeat`, base), {
       method: 'PUT',
       headers: jsonHeaders(target.secret),
-      body: JSON.stringify({ profile }),
+      body: JSON.stringify(heartbeatPayload(profile)),
     });
-    assert.deepEqual(await jsonBody(heartbeat), { protocolVersion: 1, targetId: target.id, channel: 'main' });
+    assert.deepEqual(await jsonBody(heartbeat), { protocolVersion: 1, targetId: target.id, channel: 'main', profileVersion: 1, profileChanged: false, republishRecommended: false });
 
     // Pairing removed it from the pending list.
     const listed = await fetch(new URL('/v1/admin/targets', base), { method: 'GET', headers: authHeader(ADMIN_SECRET) });
     const stillPending = (await jsonBody(listed)).targets.some((t: { id: string }) => t.id === target.id);
     assert.equal(stillPending, false);
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('reports an active render observation with exact fit metrics through the target status API', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    const target = await registerTarget(base);
+    const paired = await pairTarget(base, ADMIN_SECRET, target.id, target.pairingCode, 'main', 'Main channel');
+    assert.equal(paired.status, 201);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+    const published = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision()),
+    });
+    assert.equal(published.status, 201);
+
+    const heartbeat = await fetch(new URL(`/v1/targets/${target.id}/heartbeat`, base), {
+      method: 'PUT',
+      headers: jsonHeaders(target.secret),
+      body: JSON.stringify({ profile: registerableProfile(), capabilities: ['render-status'], clientVersion: '0.1.1' }),
+    });
+    assert.equal(heartbeat.status, 200);
+
+    const report = await fetch(new URL(`/v1/targets/${target.id}/render-status`, base), {
+      method: 'PUT',
+      headers: jsonHeaders(target.secret),
+      body: JSON.stringify({
+        protocolVersion: 1,
+        targetId: target.id,
+        attemptId: 'activation-1',
+        attemptStartedAt: Date.now(),
+        profileVersion: 1,
+        currentRevisionId: 'rev-001',
+        candidateRevisionId: 'rev-001',
+        rendered: { width: 960, height: 540, scrollWidth: 960, scrollHeight: 540 },
+        overflow: { horizontal: false, vertical: false },
+        activation: 'active',
+        failureReason: null,
+      }),
+    });
+    assert.equal(report.status, 200);
+
+    const targetStatus = await fetch(new URL('/v1/channels/main/target', base), { headers: authHeader(target.secret) });
+    assert.equal(targetStatus.status, 200);
+    const targetBody = await jsonBody(targetStatus);
+    assert.deepEqual({ ...targetBody, lastSeenAt: 0 }, {
+      protocolVersion: 1,
+      id: target.id,
+      channel: 'main',
+      clientName: 'Living room PC',
+      profile: registerableProfile(),
+      capabilities: ['render-status'],
+      clientVersion: '0.1.1',
+      lastSeenAt: 0,
+      online: true,
+      profileChangedAt: null,
+      republishRecommended: false,
+    });
+
+    const status = await fetch(new URL('/v1/channels/main/render-status', base), { headers: authHeader(target.secret) });
+    assert.equal(status.status, 200);
+    const statusBody = await jsonBody(status);
+    assert.deepEqual(
+      { ...statusBody, observedAt: 0 },
+      {
+        protocolVersion: 1,
+        targetId: target.id,
+        attemptId: 'activation-1',
+        attemptStartedAt: statusBody.attemptStartedAt,
+        profileVersion: 1,
+        currentRevisionId: 'rev-001',
+        candidateRevisionId: 'rev-001',
+        rendered: { width: 960, height: 540, scrollWidth: 960, scrollHeight: 540 },
+        overflow: { horizontal: false, vertical: false },
+        activation: 'active',
+        failureReason: null,
+        observedAt: 0,
+        online: true,
+      }
+    );
+    assert.equal(typeof statusBody.observedAt, 'number');
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('preserves stale metrics offline and distinguishes a rejected candidate after a profile change', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    const target = await registerTarget(base);
+    const paired = await pairTarget(base, ADMIN_SECRET, target.id, target.pairingCode, 'main', 'Main channel');
+    assert.equal(paired.status, 201);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+    const first = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT', headers: jsonHeaders(publisher.secret), body: JSON.stringify(publishableRevision()),
+    });
+    assert.equal(first.status, 201);
+
+    const firstAttemptAt = Date.now();
+    const active = await fetch(new URL(`/v1/targets/${target.id}/render-status`, base), {
+      method: 'PUT',
+      headers: jsonHeaders(target.secret),
+      body: JSON.stringify({
+        protocolVersion: 1, targetId: target.id, attemptId: 'activation-1', attemptStartedAt: firstAttemptAt,
+        profileVersion: 1, currentRevisionId: 'rev-001', candidateRevisionId: 'rev-001',
+        rendered: { width: 960, height: 540, scrollWidth: 960, scrollHeight: 540 },
+        overflow: { horizontal: false, vertical: false }, activation: 'active', failureReason: null,
+      }),
+    });
+    assert.equal(active.status, 200);
+
+    const resizedProfile = registerableProfile({ contentBox: { width: 800, height: 480 } });
+    const heartbeat = await fetch(new URL(`/v1/targets/${target.id}/heartbeat`, base), {
+      method: 'PUT', headers: jsonHeaders(target.secret),
+      body: JSON.stringify({ profile: resizedProfile, capabilities: ['render-status'], clientVersion: '0.1.1' }),
+    });
+    assert.deepEqual(await jsonBody(heartbeat), {
+      protocolVersion: 1, targetId: target.id, channel: 'main', profileVersion: 2, profileChanged: true, republishRecommended: true,
+    });
+
+    const targetStatus = await fetch(new URL('/v1/channels/main/target', base), { headers: authHeader(target.secret) });
+    const targetBody = await jsonBody(targetStatus);
+    assert.equal(targetBody.profile.version, 2);
+    assert.deepEqual(targetBody.profile.contentBox, { width: 800, height: 480 });
+    assert.equal(targetBody.republishRecommended, true);
+    assert.equal(typeof targetBody.profileChangedAt, 'number');
+
+    const second = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT', headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision({ id: 'rev-002', profileVersion: 2 })),
+    });
+    assert.equal(second.status, 201);
+    const rejected = await fetch(new URL(`/v1/targets/${target.id}/render-status`, base), {
+      method: 'PUT',
+      headers: jsonHeaders(target.secret),
+      body: JSON.stringify({
+        protocolVersion: 1, targetId: target.id, attemptId: 'activation-2', attemptStartedAt: firstAttemptAt + 1,
+        profileVersion: 2, currentRevisionId: 'rev-001', candidateRevisionId: 'rev-002',
+        rendered: { width: 800, height: 480, scrollWidth: 920, scrollHeight: 480 },
+        overflow: { horizontal: true, vertical: false }, activation: 'rejected', failureReason: 'The candidate iframe failed to stage',
+      }),
+    });
+    assert.equal(rejected.status, 200);
+
+    const realNow = Date.now;
+    Date.now = () => realNow() + TARGET_ONLINE_WINDOW_MS + 1;
+    try {
+      const status = await fetch(new URL('/v1/channels/main/render-status', base), { headers: authHeader(target.secret) });
+      assert.equal(status.status, 200);
+      const body = await jsonBody(status);
+      assert.equal(body.online, false);
+      assert.equal(typeof body.observedAt, 'number');
+      assert.equal(body.currentRevisionId, 'rev-001');
+      assert.equal(body.candidateRevisionId, 'rev-002');
+      assert.equal(body.activation, 'rejected');
+      assert.equal(body.failureReason, 'The candidate iframe failed to stage');
+      assert.deepEqual(body.overflow, { horizontal: true, vertical: false });
+    } finally {
+      Date.now = realNow;
+    }
   } finally {
     await mailbox.stop();
   }
@@ -839,10 +1011,10 @@ test('restarting the mailbox preserves an existing pairing', async () => {
       const heartbeat = await fetch(new URL(`/v1/targets/${target.id}/heartbeat`, second.url), {
         method: 'PUT',
         headers: jsonHeaders(target.secret),
-        body: JSON.stringify({ profile: registerableProfile() }),
+        body: JSON.stringify(heartbeatPayload(registerableProfile())),
       });
       assert.equal(heartbeat.status, 200);
-      assert.deepEqual(await jsonBody(heartbeat), { protocolVersion: 1, targetId: target.id, channel: 'main' });
+      assert.deepEqual(await jsonBody(heartbeat), { protocolVersion: 1, targetId: target.id, channel: 'main', profileVersion: 1, profileChanged: false, republishRecommended: false });
     } finally {
       await second.stop();
     }
@@ -869,9 +1041,9 @@ test('a second target cannot silently attach to an already-paired channel', asyn
     const heartbeat = await fetch(new URL(`/v1/targets/${first.id}/heartbeat`, base), {
       method: 'PUT',
       headers: jsonHeaders(first.secret),
-      body: JSON.stringify({ profile: registerableProfile() }),
+      body: JSON.stringify(heartbeatPayload(registerableProfile())),
     });
-    assert.deepEqual(await jsonBody(heartbeat), { protocolVersion: 1, targetId: first.id, channel: 'main' });
+    assert.deepEqual(await jsonBody(heartbeat), { protocolVersion: 1, targetId: first.id, channel: 'main', profileVersion: 1, profileChanged: false, republishRecommended: false });
   } finally {
     await mailbox.stop();
   }

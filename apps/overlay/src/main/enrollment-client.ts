@@ -2,7 +2,9 @@ import {
   heartbeatResponseSchema,
   protocolErrorSchema,
   targetRegistrationSchema,
+  protocolAcknowledgementSchema,
   type HeartbeatResponse,
+  type RenderStatus,
   type RuntimeSchema,
   type TargetProfile,
   type TargetRegistration,
@@ -32,15 +34,33 @@ export async function heartbeat(
   mailboxUrl: string,
   targetId: string,
   secret: string,
-  profile: TargetProfile
+  profile: TargetProfile,
+  capabilities: string[],
+  clientVersion: string
 ): Promise<HeartbeatResponse> {
   return request(
     mailboxUrl,
     `/v1/targets/${encodeURIComponent(targetId)}/heartbeat`,
     'PUT',
     secret,
-    { profile },
+    { profile, capabilities, clientVersion },
     heartbeatResponseSchema
+  );
+}
+
+export async function reportRenderStatus(
+  mailboxUrl: string,
+  targetId: string,
+  secret: string,
+  status: RenderStatus
+): Promise<void> {
+  await request(
+    mailboxUrl,
+    `/v1/targets/${encodeURIComponent(targetId)}/render-status`,
+    'PUT',
+    secret,
+    status,
+    protocolAcknowledgementSchema
   );
 }
 

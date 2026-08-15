@@ -75,6 +75,29 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 4,
+    sql: `
+      ALTER TABLE targets ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE targets ADD COLUMN client_version TEXT NOT NULL DEFAULT 'unknown';
+      ALTER TABLE targets ADD COLUMN profile_changed_at INTEGER NULL;
+      ALTER TABLE targets ADD COLUMN republish_recommended INTEGER NOT NULL DEFAULT 0;
+
+      CREATE TABLE render_statuses (
+        target_id TEXT PRIMARY KEY REFERENCES targets(id) ON DELETE CASCADE,
+        attempt_id TEXT NOT NULL,
+        attempt_started_at INTEGER NOT NULL,
+        profile_version INTEGER NOT NULL,
+        current_revision_id TEXT NULL,
+        candidate_revision_id TEXT NULL,
+        rendered TEXT NOT NULL,
+        overflow TEXT NOT NULL,
+        activation TEXT NOT NULL,
+        failure_reason TEXT NULL,
+        observed_at INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseSync): void {
