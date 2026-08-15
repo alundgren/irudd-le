@@ -3,6 +3,8 @@ import { PROTOCOL_VERSION, targetProfileSchema, type TargetProfile } from '@irud
 import { config } from './config';
 import { clearEnrollment, loadEnrollment, saveEnrollment, type EnrollmentState } from './enrollment-store';
 import { EnrollmentApiError, heartbeat, registerTarget } from './enrollment-client';
+import { RevisionDelivery } from './revision-delivery';
+import { clearCachedRevision } from './revision-cache';
 
 const PROFILE_VERSION = 1;
 
@@ -21,19 +23,27 @@ export class EnrollmentManager {
   private pairingCodeExpiresAt: number | null = null;
   private error: string | null = null;
   private timer: NodeJS.Timeout | null = null;
+  private readonly delivery: RevisionDelivery;
 
   constructor(win: BrowserWindow, userDataDir: string) {
     this.win = win;
     this.userDataDir = userDataDir;
     this.state = loadEnrollment(userDataDir);
+    this.delivery = new RevisionDelivery(win, userDataDir);
   }
 
   /** Call once, after the window has a page loaded. Resumes heartbeating if already enrolled. */
   start(): void {
+    this.delivery.start(this.state);
     if (this.state) this.startHeartbeat();
   }
 
   stop(): void {
+    this.stopHeartbeat();
+    this.delivery.stop();
+  }
+
+  private stopHeartbeat(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
   }
@@ -66,6 +76,7 @@ export class EnrollmentManager {
       this.pairingCode = registration.pairingCode;
       this.pairingCodeExpiresAt = registration.pairingCodeExpiresAt;
       this.error = null;
+      this.delivery.start(this.state);
       this.startHeartbeat();
     } catch (error: unknown) {
       this.error = describeError(error);
@@ -78,6 +89,7 @@ export class EnrollmentManager {
   reEnroll(): EnrollmentInfo {
     this.stop();
     clearEnrollment(this.userDataDir);
+    clearCachedRevision(this.userDataDir);
     this.state = null;
     this.pairingCode = null;
     this.pairingCodeExpiresAt = null;
@@ -87,7 +99,7 @@ export class EnrollmentManager {
   }
 
   private startHeartbeat(): void {
-    this.stop();
+    this.stopHeartbeat();
     void this.heartbeatOnce();
     this.timer = setInterval(() => void this.heartbeatOnce(), config.enrollment.heartbeatIntervalMs);
   }
@@ -107,6 +119,7 @@ export class EnrollmentManager {
           this.pairingCode = null;
           this.pairingCodeExpiresAt = null;
         }
+        this.delivery.update(this.state);
       }
     } catch (error: unknown) {
       // A transient network hiccup or an expired/unknown target must never

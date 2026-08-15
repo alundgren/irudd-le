@@ -58,6 +58,26 @@ const api: OverlayApi = {
       };
     },
   },
+
+  revisions: {
+    onStage: (handler) => {
+      const listener = (_event: unknown, command: RevisionActivationCommand): void => handler(command);
+      ipcRenderer.on('revision:stage', listener);
+      return () => ipcRenderer.removeListener('revision:stage', listener);
+    },
+    onCommit: (handler) => {
+      const listener = (_event: unknown, attemptId: string): void => handler(attemptId);
+      ipcRenderer.on('revision:commit', listener);
+      return () => ipcRenderer.removeListener('revision:commit', listener);
+    },
+    onDiscard: (handler) => {
+      const listener = (_event: unknown, attemptId: string): void => handler(attemptId);
+      ipcRenderer.on('revision:discard', listener);
+      return () => ipcRenderer.removeListener('revision:discard', listener);
+    },
+    completeStage: (result) => ipcRenderer.send('revision:stage-result', result),
+    completeCommit: (result) => ipcRenderer.send('revision:commit-result', result),
+  },
 };
 
 contextBridge.exposeInMainWorld('overlay', api);

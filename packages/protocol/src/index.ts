@@ -281,6 +281,29 @@ export const revisionSchema = schema<Revision>((value) => {
   };
 });
 
+/**
+ * A revision publication may compare-and-swap the durable current revision.
+ * Omitting `expectedCurrentRevisionId` keeps the unconditional publication
+ * behaviour used by the first mailbox slice; `null` explicitly expects an
+ * empty channel.
+ */
+export interface RevisionPublication extends Revision {
+  expectedCurrentRevisionId?: string | null;
+}
+
+export const revisionPublicationSchema = schema<RevisionPublication>((value) => {
+  const input = record(value, 'revisionPublication');
+  const revision = revisionSchema.parse(input);
+  const expected = input.expectedCurrentRevisionId;
+  if (expected !== undefined && expected !== null && typeof expected !== 'string') {
+    throw invalid('revisionPublication.expectedCurrentRevisionId', 'must be a string, null, or absent');
+  }
+  if (expected === '') {
+    throw invalid('revisionPublication.expectedCurrentRevisionId', 'must be a non-empty string, null, or absent');
+  }
+  return expected === undefined ? revision : { ...revision, expectedCurrentRevisionId: expected };
+});
+
 export interface RenderStatus {
   protocolVersion: ProtocolVersion;
   targetId: string;

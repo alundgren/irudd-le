@@ -527,6 +527,122 @@ test('preserves the previous current revision when a publication fails atomicall
   }
 });
 
+test('conditionally publishes only when the expected current revision still matches', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+    const reader = await mintToken(base, ADMIN_SECRET, 'reader', 'main', 'Overlay main');
+
+    const first = publishableRevision({ expectedCurrentRevisionId: null });
+    const firstResponse = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(first),
+    });
+    assert.equal(firstResponse.status, 201);
+
+    const second = publishableRevision({
+      id: 'rev-002',
+      html: '<h1>second</h1>',
+      expectedCurrentRevisionId: 'rev-001',
+    });
+    const secondResponse = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(second),
+    });
+    assert.equal(secondResponse.status, 201);
+
+    const stale = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(
+        publishableRevision({ id: 'rev-003', html: '<h1>stale</h1>', expectedCurrentRevisionId: 'rev-001' })
+      ),
+    });
+    assert.equal(stale.status, 409);
+    assert.equal((await jsonBody(stale)).code, 'current_revision_conflict');
+
+    const current = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'GET',
+      headers: authHeader(reader.secret),
+    });
+    assert.deepEqual(await jsonBody(current), publishableRevision({ id: 'rev-002', html: '<h1>second</h1>' }));
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('notifies a paired target after a durable revision publication', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  const abort = new AbortController();
+  try {
+    const target = await registerTarget(base);
+    const paired = await pairTarget(base, ADMIN_SECRET, target.id, target.pairingCode, 'main', 'Main channel');
+    assert.equal(paired.status, 201);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+
+    const events = await fetch(new URL('/v1/channels/main/events', base), {
+      headers: authHeader(target.secret),
+      signal: abort.signal,
+    });
+    assert.equal(events.status, 200);
+    assert.match(events.headers.get('content-type') ?? '', /^text\/event-stream/);
+
+    const published = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision()),
+    });
+    assert.equal(published.status, 201);
+
+    const firstChunk = await events.body!.getReader().read();
+    assert.equal(new TextDecoder().decode(firstChunk.value), 'event: revision\ndata: {"revisionId":"rev-001"}\n\n');
+
+    const current = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      headers: authHeader(target.secret),
+    });
+    assert.equal(current.status, 200);
+    assert.deepEqual(await jsonBody(current), publishableRevision());
+  } finally {
+    abort.abort();
+    await mailbox.stop();
+  }
+});
+
+test('rejects a revision for a paired channel when its profile version is incompatible', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    const target = await registerTarget(base);
+    const paired = await pairTarget(base, ADMIN_SECRET, target.id, target.pairingCode, 'main', 'Main channel');
+    assert.equal(paired.status, 201);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+
+    const rejected = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision({ profileVersion: 2 })),
+    });
+    assert.equal(rejected.status, 409);
+    assert.equal((await jsonBody(rejected)).code, 'profile_version_mismatch');
+
+    const current = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      headers: authHeader(target.secret),
+    });
+    assert.equal(current.status, 404);
+    assert.equal((await jsonBody(current)).code, 'no_current_revision');
+  } finally {
+    await mailbox.stop();
+  }
+});
+
 test('rejects unsupported protocol versions with a structured protocol error', async () => {
   const mailbox = createMailbox(baseOptions());
   await mailbox.start();

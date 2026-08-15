@@ -53,6 +53,43 @@ interface EnrollmentApi {
   onChanged(handler: (info: EnrollmentInfo) => void): () => void;
 }
 
+interface RevisionActivation {
+  protocolVersion: number;
+  id: string;
+  channel: string;
+  profileVersion: number;
+  html: string;
+  assetIds: string[];
+}
+
+interface RevisionActivationCommand {
+  attemptId: string;
+  revision: RevisionActivation;
+  deadlineAt: number;
+}
+
+interface RevisionStageResult {
+  attemptId: string;
+  revisionId: string;
+  staged: boolean;
+  error?: string;
+}
+
+interface RevisionCommitResult {
+  attemptId: string;
+  revisionId: string;
+  activated: boolean;
+  error?: string;
+}
+
+interface RevisionApi {
+  onStage(handler: (command: RevisionActivationCommand) => void): () => void;
+  onCommit(handler: (attemptId: string) => void): () => void;
+  onDiscard(handler: (attemptId: string) => void): () => void;
+  completeStage(result: RevisionStageResult): void;
+  completeCommit(result: RevisionCommitResult): void;
+}
+
 /** State plus the read-only facts the UI wants at boot. */
 interface OverlayInfo extends OverlayState {
   protocolVersion: number;
@@ -75,6 +112,7 @@ interface OverlayApi {
   onUpdateStatusChanged(handler: (status: UpdateStatus) => void): () => void;
 
   enrollment: EnrollmentApi;
+  revisions: RevisionApi;
 }
 
 interface Window {
