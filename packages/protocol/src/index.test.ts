@@ -6,12 +6,31 @@ import {
   assetSchema,
   channelSchema,
   createTokenRequestSchema,
+  heartbeatRequestSchema,
+  heartbeatResponseSchema,
+  pairTargetRequestSchema,
   protocolErrorSchema,
   protocolEnvelopeSchema,
+  registerTargetRequestSchema,
   renderStatusSchema,
   revisionSchema,
   targetProfileSchema,
+  targetRegistrationSchema,
 } from './index';
+
+function validProfile(): Record<string, unknown> {
+  return {
+    version: 1,
+    contentBox: { width: 960, height: 540 },
+    devicePixelRatio: 2,
+    screenshot: { width: 1920, height: 1080 },
+    preferredIconSize: { min: 32, max: 64 },
+    minimumTextSize: 18,
+    background: { opaque: false },
+    features: [],
+    protocolVersion: PROTOCOL_VERSION,
+  };
+}
 
 test('accepts a current-version publication envelope', () => {
   const envelope = protocolEnvelopeSchema.parse({
@@ -105,6 +124,85 @@ test('validates a create-token request and requires a channel for scoped kinds',
   assert.throws(
     () => createTokenRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, kind: 'root', channel: 'main', label: 'x' }),
     (error: unknown) => error instanceof ProtocolValidationError && error.path === 'createTokenRequest.kind'
+  );
+});
+
+test('validates a register-target request and rejects an oversized client name', () => {
+  const request = registerTargetRequestSchema.parse({ clientName: 'Living room PC', profile: validProfile() });
+  assert.equal(request.clientName, 'Living room PC');
+  assert.deepEqual(request.profile, validProfile());
+
+  assert.throws(
+    () => registerTargetRequestSchema.parse({ clientName: 'x'.repeat(101), profile: validProfile() }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.path === 'registerTargetRequest.clientName'
+  );
+  assert.throws(
+    () => registerTargetRequestSchema.parse({ clientName: 'Living room PC', profile: { ...validProfile(), protocolVersion: 2 } }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.code === 'unsupported_protocol_version'
+  );
+});
+
+test('validates a heartbeat request against the target profile schema', () => {
+  const request = heartbeatRequestSchema.parse({ profile: validProfile() });
+  assert.deepEqual(request.profile, validProfile());
+
+  assert.throws(
+    () => heartbeatRequestSchema.parse({ profile: { ...validProfile(), contentBox: { width: 0, height: 540 } } }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.path === 'targetProfile.contentBox.width'
+  );
+});
+
+test('validates a pair-target request and rejects a non-slug channel id', () => {
+  assert.deepEqual(
+    pairTargetRequestSchema.parse({
+      protocolVersion: PROTOCOL_VERSION,
+      pairingCode: '482913',
+      channelId: 'main',
+      channelName: 'Main channel',
+    }),
+    { protocolVersion: PROTOCOL_VERSION, pairingCode: '482913', channelId: 'main', channelName: 'Main channel' }
+  );
+  rejectsNonSlug(
+    pairTargetRequestSchema.parse,
+    { pairingCode: '482913', channelName: 'Main channel' },
+    'channelId',
+    'pairTargetRequest.channelId'
+  );
+});
+
+test('validates a target registration response, since it gets persisted as local identity', () => {
+  const registration = targetRegistrationSchema.parse({
+    protocolVersion: PROTOCOL_VERSION,
+    id: 'target-1',
+    secret: 'tgt_abc123',
+    pairingCode: '482913',
+    pairingCodeExpiresAt: 123,
+  });
+  assert.deepEqual(registration, {
+    protocolVersion: PROTOCOL_VERSION,
+    id: 'target-1',
+    secret: 'tgt_abc123',
+    pairingCode: '482913',
+    pairingCodeExpiresAt: 123,
+  });
+  assert.throws(
+    () => targetRegistrationSchema.parse({ protocolVersion: PROTOCOL_VERSION, id: 'target-1', secret: 'x', pairingCode: '1', pairingCodeExpiresAt: 'soon' }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.path === 'targetRegistration.pairingCodeExpiresAt'
+  );
+});
+
+test('validates a heartbeat response and accepts a null channel', () => {
+  assert.deepEqual(
+    heartbeatResponseSchema.parse({ protocolVersion: PROTOCOL_VERSION, targetId: 'target-1', channel: null }),
+    { protocolVersion: PROTOCOL_VERSION, targetId: 'target-1', channel: null }
+  );
+  assert.deepEqual(
+    heartbeatResponseSchema.parse({ protocolVersion: PROTOCOL_VERSION, targetId: 'target-1', channel: 'main' }),
+    { protocolVersion: PROTOCOL_VERSION, targetId: 'target-1', channel: 'main' }
+  );
+  assert.throws(
+    () => heartbeatResponseSchema.parse({ protocolVersion: PROTOCOL_VERSION, targetId: 'target-1', channel: 'Not A Slug' }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.path === 'heartbeatResponse.channel'
   );
 });
 

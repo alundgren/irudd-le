@@ -23,3 +23,12 @@ test('keeps normal mode content-only while retaining local recovery controls', (
   assert.match(renderer, /<button\b[^>]*\bid=["']resume-content["']/);
   assert.match(renderer, /<button\b[^>]*\bid=["']quit-overlay["']/);
 });
+
+test('offers a first-run enrollment form and a pairing/retarget status view', () => {
+  assert.match(renderer, /<input\b[^>]*\bid=["']mailbox-url["']/);
+  assert.match(renderer, /<input\b[^>]*\bid=["']client-name["']/);
+  assert.match(renderer, /<button\b[^>]*\bid=["']enroll-btn["']/);
+  assert.match(renderer, /<button\b[^>]*\bid=["']re-enroll-btn["']/);
+  assert.match(renderer, /<p\b[^>]*\bid=["']enrollment-detail["']/);
+  assert.match(renderer, /<p\b[^>]*\bid=["']pairing-code["']/);
+});

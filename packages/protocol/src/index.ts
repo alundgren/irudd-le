@@ -166,6 +166,100 @@ export const targetProfileSchema = schema<TargetProfile>((value) => {
   };
 });
 
+export interface RegisterTargetRequest {
+  clientName: string;
+  profile: TargetProfile;
+}
+
+export const registerTargetRequestSchema = schema<RegisterTargetRequest>((value) => {
+  const input = record(value, 'registerTargetRequest');
+  return {
+    clientName: boundedString(input.clientName, 'registerTargetRequest.clientName', 100),
+    profile: targetProfileSchema.parse(input.profile),
+  };
+});
+
+/** Returned once, at registration; `secret` authenticates subsequent heartbeats for this target id. */
+export interface TargetRegistration {
+  protocolVersion: ProtocolVersion;
+  id: string;
+  secret: string;
+  pairingCode: string;
+  pairingCodeExpiresAt: number;
+}
+
+/** Validated client-side too: this response gets persisted as the overlay's local identity. */
+export const targetRegistrationSchema = schema<TargetRegistration>((value) => {
+  const input = record(value, 'targetRegistration');
+  return {
+    protocolVersion: protocolVersionSchema.parse(input.protocolVersion),
+    id: string(input.id, 'targetRegistration.id'),
+    secret: string(input.secret, 'targetRegistration.secret'),
+    pairingCode: string(input.pairingCode, 'targetRegistration.pairingCode'),
+    pairingCodeExpiresAt: integer(input.pairingCodeExpiresAt, 'targetRegistration.pairingCodeExpiresAt', 0),
+  };
+});
+
+export interface HeartbeatRequest {
+  profile: TargetProfile;
+}
+
+export const heartbeatRequestSchema = schema<HeartbeatRequest>((value) => {
+  const input = record(value, 'heartbeatRequest');
+  return { profile: targetProfileSchema.parse(input.profile) };
+});
+
+export interface HeartbeatResponse {
+  protocolVersion: ProtocolVersion;
+  targetId: string;
+  channel: string | null;
+}
+
+export const heartbeatResponseSchema = schema<HeartbeatResponse>((value) => {
+  const input = record(value, 'heartbeatResponse');
+  if (input.channel !== null && typeof input.channel !== 'string') {
+    throw invalid('heartbeatResponse.channel', 'must be a string or null');
+  }
+  return {
+    protocolVersion: protocolVersionSchema.parse(input.protocolVersion),
+    targetId: string(input.targetId, 'heartbeatResponse.targetId'),
+    channel: input.channel === null ? null : channelId(input.channel, 'heartbeatResponse.channel'),
+  };
+});
+
+export interface PairTargetRequest {
+  protocolVersion: ProtocolVersion;
+  pairingCode: string;
+  channelId: string;
+  channelName: string;
+}
+
+export const pairTargetRequestSchema = schema<PairTargetRequest>((value) => {
+  const input = record(value, 'pairTargetRequest');
+  return {
+    protocolVersion: protocolVersionSchema.parse(input.protocolVersion),
+    pairingCode: boundedString(input.pairingCode, 'pairTargetRequest.pairingCode', 32),
+    channelId: channelId(input.channelId, 'pairTargetRequest.channelId'),
+    channelName: string(input.channelName, 'pairTargetRequest.channelName'),
+  };
+});
+
+/**
+ * A pending (unpaired) target as admin sees it. The pairing code itself is
+ * deliberately withheld here — it is shown only on the enrolling overlay's
+ * own screen, so pairing requires a human to read it off the physical
+ * device rather than trusting the admin list alone.
+ */
+export interface PendingTarget {
+  protocolVersion: ProtocolVersion;
+  id: string;
+  clientName: string;
+  profile: TargetProfile;
+  pairingCodeExpiresAt: number | null;
+  createdAt: number;
+  lastSeenAt: number;
+}
+
 export interface Revision {
   id: string;
   channel: string;

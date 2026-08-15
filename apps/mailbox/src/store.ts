@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { PROTOCOL_VERSION, type Channel, type Revision, type TokenKind } from '@irudd-le/protocol';
+import { PROTOCOL_VERSION, type Channel, type Revision, type TargetProfile, type TokenKind } from '@irudd-le/protocol';
 import { runMigrations } from './migrations';
 
 export interface TokenRecord {
@@ -14,6 +14,23 @@ export interface TokenRecord {
 interface NewToken extends TokenRecord {
   secretHash: string;
 }
+
+export interface TargetRecord {
+  id: string;
+  clientName: string;
+  profile: TargetProfile;
+  channel: string | null;
+  pairingCode: string | null;
+  pairingCodeExpiresAt: number | null;
+  createdAt: number;
+  lastSeenAt: number;
+}
+
+interface NewTarget extends TargetRecord {
+  secretHash: string;
+}
+
+export type PairTargetResult = 'paired' | 'target_not_found' | 'target_already_paired' | 'channel_exists';
 
 export class Store {
   private readonly db: DatabaseSync;
@@ -152,6 +169,107 @@ export class Store {
     const row = this.db.prepare('SELECT COUNT(*) AS n FROM tokens WHERE kind = ? AND revokedAt IS NULL').get(kind) as { n: number };
     return row.n;
   }
+
+  createTarget(target: NewTarget): void {
+    this.db
+      .prepare(
+        `INSERT INTO targets
+           (id, secret_hash, client_name, profile, channel, pairing_code, pairing_code_expires_at, createdAt, lastSeenAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        target.id,
+        target.secretHash,
+        target.clientName,
+        JSON.stringify(target.profile),
+        target.channel,
+        target.pairingCode,
+        target.pairingCodeExpiresAt,
+        target.createdAt,
+        target.lastSeenAt
+      );
+  }
+
+  getTarget(id: string): TargetRecord | undefined {
+    const row = this.db.prepare(SELECT_TARGET).get(id) as TargetRow | undefined;
+    if (!row) return undefined;
+    return toTargetRecord(row);
+  }
+
+  findTargetBySecretHash(secretHash: string): TargetRecord | undefined {
+    const row = this.db
+      .prepare(`${SELECT_TARGET_BY} secret_hash = ?`)
+      .get(secretHash) as TargetRow | undefined;
+    if (!row) return undefined;
+    return toTargetRecord(row);
+  }
+
+  /** Updates the live-reported profile and liveness timestamp; never touches pairing state. */
+  touchTargetHeartbeat(id: string, profile: TargetProfile): void {
+    this.db
+      .prepare('UPDATE targets SET profile = ?, lastSeenAt = ? WHERE id = ?')
+      .run(JSON.stringify(profile), Date.now(), id);
+  }
+
+  listPendingTargets(): TargetRecord[] {
+    const rows = this.db
+      .prepare(`${SELECT_TARGET_BY} channel IS NULL ORDER BY createdAt ASC`)
+      .all() as unknown as TargetRow[];
+    return rows.map(toTargetRecord);
+  }
+
+  /**
+   * Pairing always creates a brand-new channel from the target's current
+   * profile, atomically with assigning it to the target. The profile is
+   * read from `targets` inside this same transaction (not passed in by the
+   * caller) so the frozen `channel_profiles` copy is safe by construction
+   * rather than by the caller happening not to await anything in between.
+   * `targets.channel` is UNIQUE, so a concurrent second pairing of the same
+   * target loses this transaction's rollback rather than silently
+   * double-assigning.
+   */
+  pairTarget(targetId: string, channel: Channel): PairTargetResult {
+    this.db.exec('BEGIN');
+    try {
+      const target = this.db.prepare('SELECT channel, profile FROM targets WHERE id = ?').get(targetId) as
+        | { channel: string | null; profile: string }
+        | undefined;
+      if (!target) {
+        this.db.exec('ROLLBACK');
+        return 'target_not_found';
+      }
+      if (target.channel !== null) {
+        this.db.exec('ROLLBACK');
+        return 'target_already_paired';
+      }
+      if (this.db.prepare('SELECT 1 AS hit FROM channels WHERE id = ?').get(channel.id)) {
+        this.db.exec('ROLLBACK');
+        return 'channel_exists';
+      }
+      this.db
+        .prepare('INSERT INTO channels (id, name, protocolVersion, createdAt) VALUES (?, ?, ?, ?)')
+        .run(channel.id, channel.name, channel.protocolVersion, Date.now());
+      this.db
+        .prepare('INSERT INTO channel_profiles (channel, profile, updatedAt) VALUES (?, ?, ?)')
+        .run(channel.id, target.profile, Date.now());
+      this.db
+        .prepare('UPDATE targets SET channel = ?, pairing_code = NULL, pairing_code_expires_at = NULL WHERE id = ?')
+        .run(channel.id, targetId);
+      this.db.exec('COMMIT');
+      return 'paired';
+    } catch (e) {
+      this.db.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
+  getChannelProfile(channel: string): TargetProfile | undefined {
+    const row = this.db.prepare('SELECT profile FROM channel_profiles WHERE channel = ?').get(channel) as
+      | { profile: string }
+      | undefined;
+    if (!row) return undefined;
+    return JSON.parse(row.profile) as TargetProfile;
+  }
 }
 
 interface TokenRow {
@@ -171,5 +289,43 @@ function toTokenRecord(row: TokenRow): TokenRecord {
     label: row.label,
     createdAt: row.createdAt,
     revokedAt: row.revokedAt,
+  };
+}
+
+interface TargetRow {
+  id: string;
+  clientName: string;
+  profile: string;
+  channel: string | null;
+  pairingCode: string | null;
+  pairingCodeExpiresAt: number | null;
+  createdAt: number;
+  lastSeenAt: number;
+}
+
+const SELECT_TARGET = `
+  SELECT id, client_name AS clientName, profile, channel,
+         pairing_code AS pairingCode, pairing_code_expires_at AS pairingCodeExpiresAt,
+         createdAt, lastSeenAt
+    FROM targets
+   WHERE id = ?`;
+
+const SELECT_TARGET_BY = `
+  SELECT id, client_name AS clientName, profile, channel,
+         pairing_code AS pairingCode, pairing_code_expires_at AS pairingCodeExpiresAt,
+         createdAt, lastSeenAt
+    FROM targets
+   WHERE `;
+
+function toTargetRecord(row: TargetRow): TargetRecord {
+  return {
+    id: row.id,
+    clientName: row.clientName,
+    profile: JSON.parse(row.profile) as TargetProfile,
+    channel: row.channel,
+    pairingCode: row.pairingCode,
+    pairingCodeExpiresAt: row.pairingCodeExpiresAt,
+    createdAt: row.createdAt,
+    lastSeenAt: row.lastSeenAt,
   };
 }

@@ -51,6 +51,30 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX tokens_kind ON tokens (kind);
     `,
   },
+  {
+    version: 3,
+    sql: `
+      CREATE TABLE targets (
+        id TEXT PRIMARY KEY,
+        secret_hash TEXT NOT NULL,
+        client_name TEXT NOT NULL,
+        profile TEXT NOT NULL,
+        channel TEXT NULL UNIQUE REFERENCES channels(id) ON DELETE SET NULL,
+        pairing_code TEXT NULL,
+        pairing_code_expires_at INTEGER NULL,
+        createdAt INTEGER NOT NULL,
+        lastSeenAt INTEGER NOT NULL
+      );
+
+      CREATE UNIQUE INDEX targets_secret_hash ON targets (secret_hash);
+
+      CREATE TABLE channel_profiles (
+        channel TEXT PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
+        profile TEXT NOT NULL,
+        updatedAt INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseSync): void {

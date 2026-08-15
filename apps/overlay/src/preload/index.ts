@@ -42,6 +42,22 @@ const api: OverlayApi = {
       ipcRenderer.removeListener('update:status-changed', listener);
     };
   },
+
+  enrollment: {
+    getState: () => ipcRenderer.invoke('enrollment:get-state'),
+
+    enroll: (input) => ipcRenderer.invoke('enrollment:enroll', input),
+
+    reEnroll: () => ipcRenderer.invoke('enrollment:re-enroll'),
+
+    onChanged: (handler) => {
+      const listener = (_event: unknown, info: EnrollmentInfo): void => handler(info);
+      ipcRenderer.on('enrollment:changed', listener);
+      return () => {
+        ipcRenderer.removeListener('enrollment:changed', listener);
+      };
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld('overlay', api);

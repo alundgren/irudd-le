@@ -11,7 +11,7 @@
     "build": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.node.json && tsc -p tsconfig.web.json && node scripts/copy-static.mjs",
     "compile": "corepack pnpm build",
     "typecheck": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
-    "test": "node --test test/*.test.mjs",
+    "test": "corepack pnpm build && node --test build/main/*.test.js test/*.test.mjs",
     "start": "corepack pnpm build && electron .",
     "start:interactive": "corepack pnpm build && electron . --start-interactive",
     "dev": "nodemon --quiet --watch src --ext ts,html,css --exec \"corepack pnpm build && electron .\"",

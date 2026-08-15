@@ -24,6 +24,35 @@ interface OverlayState {
 /** The updater is deliberately informational: couch distance leaves no action. */
 type UpdateStatus = 'idle' | 'downloading';
 
+/**
+ * `unenrolled`: no local identity yet, or it was just cleared by re-enroll.
+ * `pending`: registered with a mailbox, waiting for an admin to pair it.
+ * `paired`: a channel is assigned; this is what "restart preserves the
+ * assignment" means in practice -- loaded straight from local state.
+ */
+type EnrollmentStatus = 'unenrolled' | 'pending' | 'paired';
+
+/** What the renderer's setup screen needs; never carries the target secret. */
+interface EnrollmentInfo {
+  status: EnrollmentStatus;
+  mailboxUrl: string | null;
+  clientName: string | null;
+  pairingCode: string | null;
+  pairingCodeExpiresAt: number | null;
+  channel: string | null;
+  /** The last enroll/heartbeat failure, if any, shown as-is to the operator. */
+  error: string | null;
+}
+
+interface EnrollmentApi {
+  getState(): Promise<EnrollmentInfo | null>;
+  enroll(input: { mailboxUrl: string; clientName: string }): Promise<EnrollmentInfo | null>;
+  /** Clears local identity so a fresh enrollment can retarget this overlay. */
+  reEnroll(): Promise<EnrollmentInfo | null>;
+  /** Returns an unsubscribe function. */
+  onChanged(handler: (info: EnrollmentInfo) => void): () => void;
+}
+
 /** State plus the read-only facts the UI wants at boot. */
 interface OverlayInfo extends OverlayState {
   protocolVersion: number;
@@ -44,6 +73,8 @@ interface OverlayApi {
   onModeChanged(handler: (state: OverlayState) => void): () => void;
   /** Returns an unsubscribe function. */
   onUpdateStatusChanged(handler: (status: UpdateStatus) => void): () => void;
+
+  enrollment: EnrollmentApi;
 }
 
 interface Window {

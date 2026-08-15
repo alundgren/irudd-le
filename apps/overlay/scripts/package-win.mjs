@@ -36,7 +36,13 @@ const zipName = `last-epoch-overlay-${version}-win32-x64.zip`;
 await rm(dist, { recursive: true, force: true });
 await mkdir(staging, { recursive: true });
 
-await cp(path.join(appRoot, 'build'), path.join(staging, 'build'), { recursive: true });
+// Excludes compiled `*.test.js` (src/main/*.test.ts) -- test.ts files live
+// alongside the modules they cover so tsc compiles them into build/main/
+// too, but they have no reason to ship inside a released version folder.
+await cp(path.join(appRoot, 'build'), path.join(staging, 'build'), {
+  recursive: true,
+  filter: (source) => !source.endsWith('.test.js'),
+});
 await writeFile(
   path.join(staging, 'package.json'),
   JSON.stringify(

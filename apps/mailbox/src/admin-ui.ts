@@ -61,6 +61,16 @@ export const ADMIN_UI_HTML = `<!doctype html>
   <tbody></tbody>
 </table>
 
+<h2>Pending targets</h2>
+<p>A pending target's pairing code is shown only on its own overlay screen. Ask
+whoever is looking at the device for the code before pairing.</p>
+<button id="refreshTargetsBtn">Refresh</button>
+<table id="targetTable">
+  <thead><tr><th>Client</th><th>Content box</th><th>Code expires</th><th>Pair into</th><th></th></tr></thead>
+  <tbody></tbody>
+</table>
+<div id="targetError" class="error"></div>
+
 <script>
 function adminToken() { return document.getElementById('adminToken').value.trim(); }
 
@@ -150,6 +160,70 @@ async function loadTokens() {
       });
       actionCell.appendChild(btn);
     }
+    tr.appendChild(actionCell);
+    tbody.appendChild(tr);
+  }
+}
+
+document.getElementById('refreshTargetsBtn').addEventListener('click', loadTargets);
+
+async function loadTargets() {
+  const tbody = document.querySelector('#targetTable tbody');
+  const errorEl = document.getElementById('targetError');
+  tbody.innerHTML = '';
+  errorEl.textContent = '';
+  let data;
+  try {
+    data = await api('/v1/admin/targets', { method: 'GET' });
+  } catch (e) {
+    errorEl.textContent = String(e.message || e);
+    return;
+  }
+  for (const t of data.targets) {
+    const tr = document.createElement('tr');
+    const cell = (text) => {
+      const td = document.createElement('td');
+      td.textContent = text;
+      return td;
+    };
+    tr.appendChild(cell(t.clientName));
+    tr.appendChild(cell(t.profile.contentBox.width + '×' + t.profile.contentBox.height));
+    tr.appendChild(cell(t.pairingCodeExpiresAt ? new Date(t.pairingCodeExpiresAt).toISOString() : ''));
+
+    const pairCell = document.createElement('td');
+    const channelIdInput = document.createElement('input');
+    channelIdInput.placeholder = 'channel id';
+    const channelNameInput = document.createElement('input');
+    channelNameInput.placeholder = 'channel name';
+    const codeInput = document.createElement('input');
+    codeInput.placeholder = 'pairing code';
+    pairCell.appendChild(channelIdInput);
+    pairCell.appendChild(channelNameInput);
+    pairCell.appendChild(codeInput);
+    tr.appendChild(pairCell);
+
+    const actionCell = document.createElement('td');
+    const btn = document.createElement('button');
+    btn.textContent = 'Pair';
+    btn.addEventListener('click', async () => {
+      errorEl.textContent = '';
+      try {
+        await api('/v1/admin/targets/' + encodeURIComponent(t.id) + '/pair', {
+          method: 'POST',
+          body: JSON.stringify({
+            protocolVersion: 1,
+            pairingCode: codeInput.value.trim(),
+            channelId: channelIdInput.value.trim(),
+            channelName: channelNameInput.value.trim(),
+          }),
+        });
+        await loadTargets();
+        await loadTokens();
+      } catch (e) {
+        errorEl.textContent = String(e.message || e);
+      }
+    });
+    actionCell.appendChild(btn);
     tr.appendChild(actionCell);
     tbody.appendChild(tr);
   }
