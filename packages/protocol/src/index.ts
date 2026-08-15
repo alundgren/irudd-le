@@ -55,6 +55,14 @@ function string(value: unknown, path: string): string {
   return value;
 }
 
+function boundedString(value: unknown, path: string, maxLength: number): string {
+  const parsed = string(value, path);
+  if (parsed.length > maxLength) {
+    throw invalid(path, `must be at most ${maxLength} characters`);
+  }
+  return parsed;
+}
+
 function number(value: unknown, path: string, minimum = 0): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum) {
     throw invalid(path, `must be a finite number of at least ${minimum}`);
@@ -223,6 +231,60 @@ export const assetSchema = schema<Asset>((value) => {
   if (!/^[a-f0-9]{64}$/i.test(sha256)) throw invalid('asset.sha256', 'must be a SHA-256 digest');
   return { protocolVersion: protocolVersionSchema.parse(input.protocolVersion), id: string(input.id, 'asset.id'), contentType: string(input.contentType, 'asset.contentType'), byteLength: integer(input.byteLength, 'asset.byteLength', 0), sha256 };
 });
+
+/**
+ * The three mailbox credential kinds. `admin` is unscoped; `publisher` and
+ * `reader` are each bound to exactly one channel.
+ */
+export type TokenKind = 'admin' | 'publisher' | 'reader';
+
+const TOKEN_KINDS: readonly TokenKind[] = ['admin', 'publisher', 'reader'];
+
+function tokenKind(value: unknown, path: string): TokenKind {
+  if (typeof value !== 'string' || !(TOKEN_KINDS as readonly string[]).includes(value)) {
+    throw invalid(path, `must be one of ${TOKEN_KINDS.join(', ')}`);
+  }
+  return value as TokenKind;
+}
+
+export interface CreateTokenRequest {
+  protocolVersion: ProtocolVersion;
+  kind: TokenKind;
+  channel: string | null;
+  label: string;
+}
+
+export const createTokenRequestSchema = schema<CreateTokenRequest>((value) => {
+  const input = record(value, 'createTokenRequest');
+  const kind = tokenKind(input.kind, 'createTokenRequest.kind');
+  const hasChannel = input.channel !== undefined && input.channel !== null;
+  if (kind === 'admin' && hasChannel) {
+    throw invalid('createTokenRequest.channel', 'must be absent for an admin token');
+  }
+  if (kind !== 'admin' && !hasChannel) {
+    throw invalid('createTokenRequest.channel', `is required for a ${kind} token`);
+  }
+  return {
+    protocolVersion: protocolVersionSchema.parse(input.protocolVersion),
+    kind,
+    channel: hasChannel ? channelId(input.channel, 'createTokenRequest.channel') : null,
+    label: boundedString(input.label, 'createTokenRequest.label', 100),
+  };
+});
+
+export interface TokenSummary {
+  protocolVersion: ProtocolVersion;
+  id: string;
+  kind: TokenKind;
+  channel: string | null;
+  label: string;
+  createdAt: number;
+  revokedAt: number | null;
+}
+
+export interface CreatedToken extends TokenSummary {
+  secret: string;
+}
 
 export interface ProtocolError {
   protocolVersion: ProtocolVersion;

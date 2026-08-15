@@ -5,6 +5,7 @@ import {
   ProtocolValidationError,
   assetSchema,
   channelSchema,
+  createTokenRequestSchema,
   protocolErrorSchema,
   protocolEnvelopeSchema,
   renderStatusSchema,
@@ -81,6 +82,29 @@ test('accepts a channel name that is not a slug', () => {
   assert.deepEqual(
     channelSchema.parse({ protocolVersion: PROTOCOL_VERSION, id: 'main', name: 'Main channel' }),
     { protocolVersion: PROTOCOL_VERSION, id: 'main', name: 'Main channel' }
+  );
+});
+
+test('validates a create-token request and requires a channel for scoped kinds', () => {
+  assert.deepEqual(
+    createTokenRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, kind: 'publisher', channel: 'main', label: 'Guide bot' }),
+    { protocolVersion: PROTOCOL_VERSION, kind: 'publisher', channel: 'main', label: 'Guide bot' }
+  );
+  assert.deepEqual(
+    createTokenRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, kind: 'admin', label: 'Ops' }),
+    { protocolVersion: PROTOCOL_VERSION, kind: 'admin', channel: null, label: 'Ops' }
+  );
+  assert.throws(
+    () => createTokenRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, kind: 'reader', label: 'Overlay' }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.path === 'createTokenRequest.channel'
+  );
+  assert.throws(
+    () => createTokenRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, kind: 'admin', channel: 'main', label: 'Ops' }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.path === 'createTokenRequest.channel'
+  );
+  assert.throws(
+    () => createTokenRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, kind: 'root', channel: 'main', label: 'x' }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.path === 'createTokenRequest.kind'
   );
 });
 

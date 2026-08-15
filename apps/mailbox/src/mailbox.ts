@@ -1,19 +1,36 @@
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import {
   PROTOCOL_VERSION,
   channelSchema,
+  createTokenRequestSchema,
   revisionSchema,
   type Channel,
+  type CreatedToken,
   type ProtocolError,
   type Revision,
+  type TokenKind,
+  type TokenSummary,
 } from '@irudd-le/protocol';
-import { Store } from './store';
+import { Store, type TokenRecord } from './store';
+import { ADMIN_UI_HTML } from './admin-ui';
 
 export interface MailboxOptions {
   databasePath: string;
-  bearerTokens: string[];
+  /**
+   * Seeds the first admin token the first time this database is ever opened.
+   * Ignored once any admin token (revoked or not) exists, so a restart never
+   * resurrects a credential the admin has since replaced or revoked.
+   */
+  adminBootstrapToken?: string;
   listen: { host: string; port: number };
   maxBodyBytes?: number;
+}
+
+interface Principal {
+  tokenId: string;
+  kind: TokenKind;
+  channel: string | null;
 }
 
 export interface Mailbox {
@@ -35,6 +52,7 @@ export function createMailbox(options: MailboxOptions): Mailbox {
     // handler sees is served by an open database.
     const openStore = new Store(options.databasePath);
     store = openStore;
+    bootstrapAdminToken(openStore, options.adminBootstrapToken);
     const listener = createServer((req, res) => {
       handle(req, res, options, openStore, maxBodyBytes).catch((error: unknown) => {
         console.error('Unhandled mailbox request error', error);
@@ -88,11 +106,15 @@ async function handle(
   if (url.pathname === '/healthz' || url.pathname === '/readyz') {
     return sendJson(res, 200, { ok: true, protocolVersion: PROTOCOL_VERSION });
   }
+  if ((url.pathname === '/admin' || url.pathname === '/admin/') && method === 'GET') {
+    return serveAdminUi(res);
+  }
   if (url.pathname.startsWith('/v1/')) {
-    if (!isAuthorized(req, options.bearerTokens)) {
+    const principal = authenticate(req, store);
+    if (!principal) {
       return sendError(res, 401, 'unauthorized', 'A valid bearer token is required');
     }
-    return routeV1(req, res, method, url.pathname, store, maxBodyBytes);
+    return routeV1(req, res, method, url.pathname, store, maxBodyBytes, principal);
   }
   return sendError(res, 404, 'not_found', 'Not found');
 }
@@ -103,23 +125,49 @@ async function routeV1(
   method: string,
   pathname: string,
   store: Store,
-  maxBodyBytes: number
+  maxBodyBytes: number,
+  principal: Principal
 ): Promise<void> {
   if (pathname === '/v1/channels' && method === 'POST') {
+    if (principal.kind !== 'admin') return forbidden(res);
     return createChannel(req, res, store, maxBodyBytes);
   }
   const channelMatch = pathname.match(/^\/v1\/channels\/([^/]+)$/);
   if (channelMatch) {
     const id = decodeURIComponent(channelMatch[1] ?? '');
-    if (method === 'GET') return fetchChannel(res, store, id);
+    if (method === 'GET') {
+      if (!canAccessChannel(principal, id, ['publisher', 'reader'])) return forbidden(res);
+      return fetchChannel(res, store, id);
+    }
   }
   const currentMatch = pathname.match(/^\/v1\/channels\/([^/]+)\/revisions\/current$/);
   if (currentMatch) {
     const channelId = decodeURIComponent(currentMatch[1] ?? '');
-    if (method === 'PUT') return publishRevision(req, res, store, channelId, maxBodyBytes);
-    if (method === 'GET') return getCurrentRevision(res, store, channelId);
+    if (method === 'PUT') {
+      if (!canAccessChannel(principal, channelId, ['publisher'])) return forbidden(res);
+      return publishRevision(req, res, store, channelId, maxBodyBytes);
+    }
+    if (method === 'GET') {
+      if (!canAccessChannel(principal, channelId, ['publisher', 'reader'])) return forbidden(res);
+      return getCurrentRevision(res, store, channelId);
+    }
+  }
+  if (pathname === '/v1/admin/tokens') {
+    if (principal.kind !== 'admin') return forbidden(res);
+    if (method === 'POST') return createTokenHandler(req, res, store, maxBodyBytes);
+    if (method === 'GET') return listTokensHandler(res, store);
+  }
+  const tokenMatch = pathname.match(/^\/v1\/admin\/tokens\/([^/]+)$/);
+  if (tokenMatch) {
+    if (principal.kind !== 'admin') return forbidden(res);
+    const id = decodeURIComponent(tokenMatch[1] ?? '');
+    if (method === 'DELETE') return revokeTokenHandler(res, store, id);
   }
   return sendError(res, 404, 'not_found', 'Not found');
+}
+
+function forbidden(res: ServerResponse): void {
+  sendError(res, 403, 'forbidden', "The credential's scope does not permit this operation");
 }
 
 async function createChannel(req: IncomingMessage, res: ServerResponse, store: Store, maxBodyBytes: number): Promise<void> {
@@ -241,24 +289,120 @@ interface ReadError {
   readonly message: string;
 }
 
-function isAuthorized(req: IncomingMessage, tokens: string[]): boolean {
+function authenticate(req: IncomingMessage, store: Store): Principal | null {
   const header = req.headers.authorization;
-  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
-  const token = header.slice('Bearer '.length);
-  return tokens.some((known) => timingSafeEqual(token, known));
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return null;
+  const secret = header.slice('Bearer '.length);
+  if (secret.length === 0) return null;
+  const token = store.findActiveTokenByHash(hashSecret(secret));
+  if (!token) return null;
+  return { tokenId: token.id, kind: token.kind, channel: token.channel };
 }
 
-function timingSafeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a, 'utf8');
-  const bb = Buffer.from(b, 'utf8');
-  if (ab.length !== bb.length) return false;
-  let diff = 0;
-  for (let i = 0; i < ab.length; i++) {
-    const x = ab[i] ?? 0;
-    const y = bb[i] ?? 0;
-    diff |= x ^ y;
+/**
+ * An admin credential has full authority; publisher/reader credentials are
+ * each bound to exactly one channel and only within the kinds the caller
+ * allows for this operation (e.g. reading permits both publisher and reader).
+ */
+function canAccessChannel(principal: Principal, channelId: string, allowed: TokenKind[]): boolean {
+  if (principal.kind === 'admin') return true;
+  return allowed.includes(principal.kind) && principal.channel === channelId;
+}
+
+function hashSecret(secret: string): string {
+  return createHash('sha256').update(secret, 'utf8').digest('hex');
+}
+
+const TOKEN_SECRET_PREFIX: Record<TokenKind, string> = { admin: 'adm', publisher: 'pub', reader: 'rdr' };
+
+function generateSecret(kind: TokenKind): string {
+  return `${TOKEN_SECRET_PREFIX[kind]}_${randomBytes(24).toString('base64url')}`;
+}
+
+function bootstrapAdminToken(store: Store, adminBootstrapToken: string | undefined): void {
+  if (store.hasAnyTokenOfKind('admin')) {
+    if (adminBootstrapToken) {
+      console.log('An admin token already exists; ignoring the supplied adminBootstrapToken/MAILBOX_ADMIN_BOOTSTRAP_TOKEN');
+    }
+    return;
   }
-  return diff === 0;
+  if (!adminBootstrapToken) {
+    throw new Error(
+      'No admin token exists yet; set adminBootstrapToken (MAILBOX_ADMIN_BOOTSTRAP_TOKEN) to bootstrap one'
+    );
+  }
+  store.createToken({
+    id: randomUUID(),
+    kind: 'admin',
+    channel: null,
+    label: 'bootstrap',
+    secretHash: hashSecret(adminBootstrapToken),
+    createdAt: Date.now(),
+    revokedAt: null,
+  });
+}
+
+function toTokenSummary(record: TokenRecord): TokenSummary {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    id: record.id,
+    kind: record.kind,
+    channel: record.channel,
+    label: record.label,
+    createdAt: record.createdAt,
+    revokedAt: record.revokedAt,
+  };
+}
+
+async function createTokenHandler(req: IncomingMessage, res: ServerResponse, store: Store, maxBodyBytes: number): Promise<void> {
+  const result = await readJsonBody(req, maxBodyBytes);
+  if (result.error) {
+    return sendError(res, result.error.status, result.error.code, result.error.message);
+  }
+  const parsed = createTokenRequestSchema.safeParse(result.value);
+  if (!parsed.success) {
+    return sendError(res, 400, parsed.error.code, parsed.error.message);
+  }
+  const { kind, channel, label } = parsed.data;
+  if (channel !== null && !store.getChannel(channel)) {
+    return sendError(res, 404, 'channel_not_found', `Channel '${channel}' not found`);
+  }
+  const id = randomUUID();
+  const secret = generateSecret(kind);
+  const createdAt = Date.now();
+  store.createToken({ id, kind, channel, label, secretHash: hashSecret(secret), createdAt, revokedAt: null });
+  const created: CreatedToken = { ...toTokenSummary({ id, kind, channel, label, createdAt, revokedAt: null }), secret };
+  return sendJson(res, 201, created, { 'cache-control': 'no-store' });
+}
+
+function listTokensHandler(res: ServerResponse, store: Store): void {
+  return sendJson(res, 200, { tokens: store.listTokens().map(toTokenSummary) });
+}
+
+function revokeTokenHandler(res: ServerResponse, store: Store, id: string): void {
+  const token = store.getToken(id);
+  if (!token) {
+    return sendError(res, 404, 'token_not_found', `Token '${id}' not found`);
+  }
+  // Revoking the last active admin would lock every /v1/admin/* route with
+  // no restart-time recovery (bootstrap only ever seeds once per database),
+  // so refuse the one revoke that would leave zero active admins.
+  if (token.kind === 'admin' && token.revokedAt === null && store.countActiveTokensOfKind('admin') <= 1) {
+    return sendError(res, 409, 'last_admin_token', 'Cannot revoke the last active admin token');
+  }
+  store.revokeToken(id);
+  res.writeHead(204);
+  res.end();
+}
+
+function serveAdminUi(res: ServerResponse): void {
+  const payload = Buffer.from(ADMIN_UI_HTML, 'utf8');
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'content-length': payload.length,
+    'cache-control': 'no-store',
+  });
+  res.end(payload);
 }
 
 function sendError(res: ServerResponse, status: number, code: string, message: string): void {
@@ -266,8 +410,12 @@ function sendError(res: ServerResponse, status: number, code: string, message: s
   sendJson(res, status, error);
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+function sendJson(res: ServerResponse, status: number, body: unknown, extraHeaders?: Record<string, string>): void {
   const payload = Buffer.from(JSON.stringify(body), 'utf8');
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': payload.length });
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': payload.length,
+    ...extraHeaders,
+  });
   res.end(payload);
 }

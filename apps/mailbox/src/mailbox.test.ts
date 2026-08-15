@@ -6,10 +6,12 @@ import test from 'node:test';
 
 import { createMailbox, type MailboxOptions } from './index';
 
+const ADMIN_SECRET = 'test-admin';
+
 function baseOptions(): MailboxOptions & { databasePath: string } {
   return {
     databasePath: `:memory:`,
-    bearerTokens: ['test-token'],
+    adminBootstrapToken: ADMIN_SECRET,
     listen: { host: '127.0.0.1', port: 0 },
   };
 }
@@ -18,15 +20,19 @@ function authHeader(token: string): Record<string, string> {
   return { authorization: `Bearer ${token}` };
 }
 
+function jsonHeaders(token: string): Record<string, string> {
+  return { 'content-type': 'application/json', ...authHeader(token) };
+}
+
 async function jsonBody(res: Response): Promise<any> {
   return (await res.json()) as any;
 }
 
-function publishableChannel(): object {
-  return { protocolVersion: 1, id: 'main', name: 'Main channel' };
+function publishableChannel(id = 'main', name = 'Main channel'): object {
+  return { protocolVersion: 1, id, name };
 }
 
-function publishableRevision(): object {
+function publishableRevision(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     protocolVersion: 1,
     id: 'rev-001',
@@ -34,7 +40,34 @@ function publishableRevision(): object {
     profileVersion: 1,
     html: '<h1>hello</h1>',
     assetIds: [],
+    ...overrides,
   };
+}
+
+async function createChannel(base: string, adminToken: string, channel: object = publishableChannel()): Promise<void> {
+  const res = await fetch(new URL('/v1/channels', base), {
+    method: 'POST',
+    headers: jsonHeaders(adminToken),
+    body: JSON.stringify(channel),
+  });
+  assert.equal(res.status, 201);
+}
+
+async function mintToken(
+  base: string,
+  adminToken: string,
+  kind: 'publisher' | 'reader' | 'admin',
+  channel: string | null,
+  label: string
+): Promise<{ id: string; secret: string }> {
+  const res = await fetch(new URL('/v1/admin/tokens', base), {
+    method: 'POST',
+    headers: jsonHeaders(adminToken),
+    body: JSON.stringify({ protocolVersion: 1, kind, channel: channel ?? undefined, label }),
+  });
+  assert.equal(res.status, 201);
+  const body = await jsonBody(res);
+  return { id: body.id as string, secret: body.secret as string };
 }
 
 test('rejects missing or invalid bearer credentials on protected endpoints', async () => {
@@ -48,7 +81,7 @@ test('rejects missing or invalid bearer credentials on protected endpoints', asy
 
     const wrong = await fetch(new URL('/v1/channels/main', base), {
       method: 'GET',
-      headers: authHeader('not-the-token'),
+      headers: authHeader('not-a-real-token'),
     });
     assert.equal(wrong.status, 401);
     assert.equal((await jsonBody(wrong)).code, 'unauthorized');
@@ -57,25 +90,23 @@ test('rejects missing or invalid bearer credentials on protected endpoints', asy
   }
 });
 
-test('creates and reads a channel through the canonical API', async () => {
+test('refuses to start on a fresh database with no admin token and no bootstrap secret', async () => {
+  const mailbox = createMailbox({ ...baseOptions(), adminBootstrapToken: undefined });
+  await assert.rejects(() => mailbox.start());
+});
+
+test('creates and reads a channel through the canonical API as admin', async () => {
   const mailbox = createMailbox(baseOptions());
   await mailbox.start();
   const base = mailbox.url;
-  const headers = { 'content-type': 'application/json', ...authHeader('test-token') };
   try {
-    const created = await fetch(new URL('/v1/channels', base), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(publishableChannel()),
-    });
-    assert.equal(created.status, 201);
-    assert.deepEqual(await jsonBody(created), publishableChannel());
+    await createChannel(base, ADMIN_SECRET);
 
-    const fetched = await fetch(new URL('/v1/channels/main', base), { method: 'GET', headers: authHeader('test-token') });
+    const fetched = await fetch(new URL('/v1/channels/main', base), { method: 'GET', headers: authHeader(ADMIN_SECRET) });
     assert.equal(fetched.status, 200);
     assert.deepEqual(await jsonBody(fetched), publishableChannel());
 
-    const missing = await fetch(new URL('/v1/channels/nope', base), { method: 'GET', headers: authHeader('test-token') });
+    const missing = await fetch(new URL('/v1/channels/nope', base), { method: 'GET', headers: authHeader(ADMIN_SECRET) });
     assert.equal(missing.status, 404);
     assert.equal((await jsonBody(missing)).code, 'channel_not_found');
   } finally {
@@ -87,55 +118,48 @@ test('rejects a channel id that is not a slug', async () => {
   const mailbox = createMailbox(baseOptions());
   await mailbox.start();
   const base = mailbox.url;
-  const headers = { 'content-type': 'application/json', ...authHeader('test-token') };
   try {
     const rejected = await fetch(new URL('/v1/channels', base), {
       method: 'POST',
-      headers,
+      headers: jsonHeaders(ADMIN_SECRET),
       body: JSON.stringify({ protocolVersion: 1, id: '../../etc/passwd', name: 'Traversal' }),
     });
     assert.equal(rejected.status, 400);
     const body = await jsonBody(rejected);
     assert.equal(body.code, 'invalid_protocol_value');
     assert.equal(body.protocolVersion, 1);
-
-    const listed = await fetch(new URL('/v1/channels/etc', base), {
-      method: 'GET',
-      headers: authHeader('test-token'),
-    });
-    assert.equal(listed.status, 404);
   } finally {
     await mailbox.stop();
   }
 });
 
-test('restarts against the same SQLite file and retains its channels', async () => {
+test('restarts against the same SQLite file and retains channels and tokens without re-bootstrapping', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'mailbox-restart-'));
   const databasePath = path.join(dir, 'mailbox.db');
-  const headers = { 'content-type': 'application/json', ...authHeader('test-token') };
   try {
     const first = createMailbox({ ...baseOptions(), databasePath });
     await first.start();
+    let publisherSecret: string;
     try {
-      const created = await fetch(new URL('/v1/channels', first.url), {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(publishableChannel()),
-      });
-      assert.equal(created.status, 201);
+      await createChannel(first.url, ADMIN_SECRET);
+      publisherSecret = (await mintToken(first.url, ADMIN_SECRET, 'publisher', 'main', 'Guide bot')).secret;
     } finally {
       await first.stop();
     }
 
-    const second = createMailbox({ ...baseOptions(), databasePath });
+    // No adminBootstrapToken this time: the admin token already exists in the file, so bootstrap must not run again.
+    const second = createMailbox({ ...baseOptions(), databasePath, adminBootstrapToken: undefined });
     await second.start();
     try {
-      const fetched = await fetch(new URL('/v1/channels/main', second.url), {
-        method: 'GET',
-        headers: authHeader('test-token'),
-      });
+      const fetched = await fetch(new URL('/v1/channels/main', second.url), { method: 'GET', headers: authHeader(ADMIN_SECRET) });
       assert.equal(fetched.status, 200);
-      assert.deepEqual(await jsonBody(fetched), publishableChannel());
+
+      const published = await fetch(new URL('/v1/channels/main/revisions/current', second.url), {
+        method: 'PUT',
+        headers: jsonHeaders(publisherSecret),
+        body: JSON.stringify(publishableRevision()),
+      });
+      assert.equal(published.status, 201);
     } finally {
       await second.stop();
     }
@@ -144,63 +168,276 @@ test('restarts against the same SQLite file and retains its channels', async () 
   }
 });
 
-test('publishes and reads the current revision through the API', async () => {
+test('mints scoped publisher and reader tokens, publishes and reads revisions through the API', async () => {
   const mailbox = createMailbox(baseOptions());
   await mailbox.start();
   const base = mailbox.url;
-  const headers = { 'content-type': 'application/json', ...authHeader('test-token') };
   try {
-    const created = await fetch(new URL('/v1/channels', base), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(publishableChannel()),
-    });
-    assert.equal(created.status, 201);
+    await createChannel(base, ADMIN_SECRET);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+    const reader = await mintToken(base, ADMIN_SECRET, 'reader', 'main', 'Overlay main');
 
     const published = await fetch(new URL('/v1/channels/main/revisions/current', base), {
       method: 'PUT',
-      headers,
+      headers: jsonHeaders(publisher.secret),
       body: JSON.stringify(publishableRevision()),
     });
     assert.equal(published.status, 201);
     assert.deepEqual(await jsonBody(published), publishableRevision());
 
-    const fetched = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+    const readByReader = await fetch(new URL('/v1/channels/main/revisions/current', base), {
       method: 'GET',
-      headers: authHeader('test-token'),
+      headers: authHeader(reader.secret),
     });
-    assert.equal(fetched.status, 200);
-    assert.deepEqual(await jsonBody(fetched), publishableRevision());
+    assert.equal(readByReader.status, 200);
+    assert.deepEqual(await jsonBody(readByReader), publishableRevision());
+
+    const readByPublisher = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'GET',
+      headers: authHeader(publisher.secret),
+    });
+    assert.equal(readByPublisher.status, 200);
 
     const second = await fetch(new URL('/v1/channels/main/revisions/current', base), {
       method: 'PUT',
-      headers,
-      body: JSON.stringify({ ...publishableRevision(), id: 'rev-002', html: '<h1>updated</h1>' }),
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision({ id: 'rev-002', html: '<h1>updated</h1>' })),
     });
     assert.equal(second.status, 201);
 
     const current = await fetch(new URL('/v1/channels/main/revisions/current', base), {
       method: 'GET',
-      headers: authHeader('test-token'),
+      headers: authHeader(reader.secret),
     });
-    assert.equal(current.status, 200);
-    assert.deepEqual(await jsonBody(current), {
-      ...publishableRevision(),
-      id: 'rev-002',
-      html: '<h1>updated</h1>',
-    });
+    assert.deepEqual(await jsonBody(current), publishableRevision({ id: 'rev-002', html: '<h1>updated</h1>' }));
 
-    await fetch(new URL('/v1/channels', base), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ protocolVersion: 1, id: 'empty', name: 'Empty' }),
-    });
+    await createChannel(base, ADMIN_SECRET, publishableChannel('empty', 'Empty'));
+    const emptyReader = await mintToken(base, ADMIN_SECRET, 'reader', 'empty', 'Overlay empty');
     const empty = await fetch(new URL('/v1/channels/empty/revisions/current', base), {
       method: 'GET',
-      headers: authHeader('test-token'),
+      headers: authHeader(emptyReader.secret),
     });
     assert.equal(empty.status, 404);
     assert.equal((await jsonBody(empty)).code, 'no_current_revision');
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('a publisher cannot read or write an unauthorized channel', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET, publishableChannel('main', 'Main'));
+    await createChannel(base, ADMIN_SECRET, publishableChannel('other', 'Other'));
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+
+    const wrongPublish = await fetch(new URL('/v1/channels/other/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision({ channel: 'other' })),
+    });
+    assert.equal(wrongPublish.status, 403);
+    assert.equal((await jsonBody(wrongPublish)).code, 'forbidden');
+
+    const wrongRead = await fetch(new URL('/v1/channels/other', base), { method: 'GET', headers: authHeader(publisher.secret) });
+    assert.equal(wrongRead.status, 403);
+
+    const wrongRevisionRead = await fetch(new URL('/v1/channels/other/revisions/current', base), {
+      method: 'GET',
+      headers: authHeader(publisher.secret),
+    });
+    assert.equal(wrongRevisionRead.status, 403);
+
+    const ownPublish = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision()),
+    });
+    assert.equal(ownPublish.status, 201);
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('an overlay (reader) credential cannot publish or administer', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET);
+    const reader = await mintToken(base, ADMIN_SECRET, 'reader', 'main', 'Overlay main');
+
+    const publishAttempt = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(reader.secret),
+      body: JSON.stringify(publishableRevision()),
+    });
+    assert.equal(publishAttempt.status, 403);
+
+    const createChannelAttempt = await fetch(new URL('/v1/channels', base), {
+      method: 'POST',
+      headers: jsonHeaders(reader.secret),
+      body: JSON.stringify(publishableChannel('other', 'Other')),
+    });
+    assert.equal(createChannelAttempt.status, 403);
+
+    const createTokenAttempt = await fetch(new URL('/v1/admin/tokens', base), {
+      method: 'POST',
+      headers: jsonHeaders(reader.secret),
+      body: JSON.stringify({ protocolVersion: 1, kind: 'reader', channel: 'main', label: 'x' }),
+    });
+    assert.equal(createTokenAttempt.status, 403);
+
+    const listTokensAttempt = await fetch(new URL('/v1/admin/tokens', base), { method: 'GET', headers: authHeader(reader.secret) });
+    assert.equal(listTokensAttempt.status, 403);
+
+    const revokeAttempt = await fetch(new URL(`/v1/admin/tokens/${reader.id}`, base), {
+      method: 'DELETE',
+      headers: authHeader(reader.secret),
+    });
+    assert.equal(revokeAttempt.status, 403);
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('refuses to revoke the last active admin token but allows it once another admin exists', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    const listed = await fetch(new URL('/v1/admin/tokens', base), { method: 'GET', headers: authHeader(ADMIN_SECRET) });
+    const bootstrapId = (await jsonBody(listed)).tokens[0].id as string;
+
+    const lockoutAttempt = await fetch(new URL(`/v1/admin/tokens/${bootstrapId}`, base), {
+      method: 'DELETE',
+      headers: authHeader(ADMIN_SECRET),
+    });
+    assert.equal(lockoutAttempt.status, 409);
+    assert.equal((await jsonBody(lockoutAttempt)).code, 'last_admin_token');
+
+    const secondAdmin = await mintToken(base, ADMIN_SECRET, 'admin', null, 'Second admin');
+
+    const nowAllowed = await fetch(new URL(`/v1/admin/tokens/${bootstrapId}`, base), {
+      method: 'DELETE',
+      headers: authHeader(ADMIN_SECRET),
+    });
+    assert.equal(nowAllowed.status, 204);
+
+    // The freshly minted admin token can administer on its own, and is itself now the last active admin.
+    const lastOneLeft = await fetch(new URL(`/v1/admin/tokens/${secondAdmin.id}`, base), {
+      method: 'DELETE',
+      headers: authHeader(secondAdmin.secret),
+    });
+    assert.equal(lastOneLeft.status, 409);
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('revocation takes effect without restarting the mailbox', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+
+    const beforeRevoke = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision()),
+    });
+    assert.equal(beforeRevoke.status, 201);
+
+    const revoked = await fetch(new URL(`/v1/admin/tokens/${publisher.id}`, base), {
+      method: 'DELETE',
+      headers: authHeader(ADMIN_SECRET),
+    });
+    assert.equal(revoked.status, 204);
+
+    const afterRevoke = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision({ id: 'rev-002' })),
+    });
+    assert.equal(afterRevoke.status, 401);
+    assert.equal((await jsonBody(afterRevoke)).code, 'unauthorized');
+
+    const missingToken = await fetch(new URL('/v1/admin/tokens/does-not-exist', base), {
+      method: 'DELETE',
+      headers: authHeader(ADMIN_SECRET),
+    });
+    assert.equal(missingToken.status, 404);
+
+    // revoking again is idempotent
+    const revokedAgain = await fetch(new URL(`/v1/admin/tokens/${publisher.id}`, base), {
+      method: 'DELETE',
+      headers: authHeader(ADMIN_SECRET),
+    });
+    assert.equal(revokedAgain.status, 204);
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('hashes secrets at rest and only returns the full value on creation', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET);
+    const created = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+
+    const listed = await fetch(new URL('/v1/admin/tokens', base), { method: 'GET', headers: authHeader(ADMIN_SECRET) });
+    assert.equal(listed.status, 200);
+    const body = await jsonBody(listed);
+    const summaries = body.tokens as Array<Record<string, unknown>>;
+    const match = summaries.find((t) => t.id === created.id);
+    assert.ok(match, 'created token should be listed');
+    assert.equal(match!.label, 'Guide bot');
+    assert.equal(match!.kind, 'publisher');
+    assert.equal(match!.channel, 'main');
+    assert.equal(match!.revokedAt, null);
+    assert.equal('secret' in match!, false);
+    assert.equal('secretHash' in match!, false);
+    for (const summary of summaries) {
+      assert.equal('secret' in summary, false);
+    }
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('requires a channel for publisher and reader tokens and forbids one for admin tokens', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET);
+
+    const missingChannel = await fetch(new URL('/v1/admin/tokens', base), {
+      method: 'POST',
+      headers: jsonHeaders(ADMIN_SECRET),
+      body: JSON.stringify({ protocolVersion: 1, kind: 'reader', label: 'Overlay' }),
+    });
+    assert.equal(missingChannel.status, 400);
+
+    const unexpectedChannel = await fetch(new URL('/v1/admin/tokens', base), {
+      method: 'POST',
+      headers: jsonHeaders(ADMIN_SECRET),
+      body: JSON.stringify({ protocolVersion: 1, kind: 'admin', channel: 'main', label: 'Ops' }),
+    });
+    assert.equal(unexpectedChannel.status, 400);
+
+    const unknownChannel = await fetch(new URL('/v1/admin/tokens', base), {
+      method: 'POST',
+      headers: jsonHeaders(ADMIN_SECRET),
+      body: JSON.stringify({ protocolVersion: 1, kind: 'publisher', channel: 'nope', label: 'Guide bot' }),
+    });
+    assert.equal(unknownChannel.status, 404);
   } finally {
     await mailbox.stop();
   }
@@ -210,36 +447,34 @@ test('preserves the previous current revision when a publication fails atomicall
   const mailbox = createMailbox(baseOptions());
   await mailbox.start();
   const base = mailbox.url;
-  const headers = { 'content-type': 'application/json', ...authHeader('test-token') };
   try {
-    await fetch(new URL('/v1/channels', base), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(publishableChannel()),
-    });
+    await createChannel(base, ADMIN_SECRET);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+    const reader = await mintToken(base, ADMIN_SECRET, 'reader', 'main', 'Overlay main');
+
     await fetch(new URL('/v1/channels/main/revisions/current', base), {
       method: 'PUT',
-      headers,
+      headers: jsonHeaders(publisher.secret),
       body: JSON.stringify(publishableRevision()),
     });
-    const secondBody = { ...publishableRevision(), id: 'rev-002', html: '<h1>second</h1>' };
+    const secondBody = publishableRevision({ id: 'rev-002', html: '<h1>second</h1>' });
     await fetch(new URL('/v1/channels/main/revisions/current', base), {
       method: 'PUT',
-      headers,
+      headers: jsonHeaders(publisher.secret),
       body: JSON.stringify(secondBody),
     });
 
     const conflict = await fetch(new URL('/v1/channels/main/revisions/current', base), {
       method: 'PUT',
-      headers,
-      body: JSON.stringify({ ...publishableRevision(), html: '<h1>forged</h1>' }),
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision({ html: '<h1>forged</h1>' })),
     });
     assert.equal(conflict.status, 409);
     assert.equal((await jsonBody(conflict)).code, 'revision_conflict');
 
     const current = await fetch(new URL('/v1/channels/main/revisions/current', base), {
       method: 'GET',
-      headers: authHeader('test-token'),
+      headers: authHeader(reader.secret),
     });
     assert.equal(current.status, 200);
     assert.deepEqual(await jsonBody(current), secondBody);
@@ -252,11 +487,10 @@ test('rejects unsupported protocol versions with a structured protocol error', a
   const mailbox = createMailbox(baseOptions());
   await mailbox.start();
   const base = mailbox.url;
-  const headers = { 'content-type': 'application/json', ...authHeader('test-token') };
   try {
     const badChannel = await fetch(new URL('/v1/channels', base), {
       method: 'POST',
-      headers,
+      headers: jsonHeaders(ADMIN_SECRET),
       body: JSON.stringify({ protocolVersion: 2, id: 'bad', name: 'Bad' }),
     });
     assert.equal(badChannel.status, 400);
@@ -264,15 +498,12 @@ test('rejects unsupported protocol versions with a structured protocol error', a
     assert.equal(badBody.code, 'unsupported_protocol_version');
     assert.equal(badBody.protocolVersion, 1);
 
-    await fetch(new URL('/v1/channels', base), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(publishableChannel()),
-    });
+    await createChannel(base, ADMIN_SECRET);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
     const badPublish = await fetch(new URL('/v1/channels/main/revisions/current', base), {
       method: 'PUT',
-      headers,
-      body: JSON.stringify({ ...publishableRevision(), protocolVersion: 2 }),
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision({ protocolVersion: 2 })),
     });
     assert.equal(badPublish.status, 400);
     const bad = await jsonBody(badPublish);
@@ -286,27 +517,19 @@ test('rejects unsupported protocol versions with a structured protocol error', a
 test('an offline channel retains and accepts content across a restart', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'mailbox-offline-'));
   const databasePath = path.join(dir, 'mailbox.db');
-  const headers = { 'content-type': 'application/json', ...authHeader('test-token') };
   try {
     const first = createMailbox({ ...baseOptions(), databasePath });
     await first.start();
+    let publisherSecret: string;
+    let readerSecret: string;
     try {
-      await fetch(new URL('/v1/channels', first.url), {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ protocolVersion: 1, id: 'offline', name: 'Offline channel' }),
-      });
-      const offlineRevision = {
-        protocolVersion: 1,
-        id: 'rev-offline-1',
-        channel: 'offline',
-        profileVersion: 1,
-        html: '<p>offline content</p>',
-        assetIds: [],
-      };
+      await createChannel(first.url, ADMIN_SECRET, publishableChannel('offline', 'Offline channel'));
+      publisherSecret = (await mintToken(first.url, ADMIN_SECRET, 'publisher', 'offline', 'Guide bot')).secret;
+      readerSecret = (await mintToken(first.url, ADMIN_SECRET, 'reader', 'offline', 'Overlay offline')).secret;
+      const offlineRevision = publishableRevision({ id: 'rev-offline-1', channel: 'offline', html: '<p>offline content</p>' });
       const published = await fetch(new URL('/v1/channels/offline/revisions/current', first.url), {
         method: 'PUT',
-        headers,
+        headers: jsonHeaders(publisherSecret),
         body: JSON.stringify(offlineRevision),
       });
       assert.equal(published.status, 201);
@@ -319,17 +542,13 @@ test('an offline channel retains and accepts content across a restart', async ()
     try {
       const current = await fetch(new URL('/v1/channels/offline/revisions/current', second.url), {
         method: 'GET',
-        headers: authHeader('test-token'),
+        headers: authHeader(readerSecret!),
       });
       assert.equal(current.status, 200);
-      assert.deepEqual(await jsonBody(current), {
-        protocolVersion: 1,
-        id: 'rev-offline-1',
-        channel: 'offline',
-        profileVersion: 1,
-        html: '<p>offline content</p>',
-        assetIds: [],
-      });
+      assert.deepEqual(
+        await jsonBody(current),
+        publishableRevision({ id: 'rev-offline-1', channel: 'offline', html: '<p>offline content</p>' })
+      );
     } finally {
       await second.stop();
     }
@@ -338,7 +557,7 @@ test('an offline channel retains and accepts content across a restart', async ()
   }
 });
 
-test('serves health and readiness from an ephemeral port', async () => {
+test('serves health, readiness, and the admin UI without a credential', async () => {
   const mailbox = createMailbox(baseOptions());
   await mailbox.start();
   const base = mailbox.url;
@@ -350,6 +569,11 @@ test('serves health and readiness from an ephemeral port', async () => {
     const ready = await fetch(new URL('/readyz', base));
     assert.equal(ready.status, 200);
     assert.deepEqual(await ready.json(), { ok: true, protocolVersion: 1 });
+
+    const admin = await fetch(new URL('/admin', base));
+    assert.equal(admin.status, 200);
+    assert.match(admin.headers.get('content-type') ?? '', /text\/html/);
+    assert.match(await admin.text(), /Mailbox admin/);
   } finally {
     await mailbox.stop();
   }

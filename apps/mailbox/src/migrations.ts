@@ -34,6 +34,23 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 2,
+    sql: `
+      CREATE TABLE tokens (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        channel TEXT NULL REFERENCES channels(id),
+        label TEXT NOT NULL,
+        secret_hash TEXT NOT NULL,
+        createdAt INTEGER NOT NULL,
+        revokedAt INTEGER NULL
+      );
+
+      CREATE UNIQUE INDEX tokens_secret_hash ON tokens (secret_hash);
+      CREATE INDEX tokens_kind ON tokens (kind);
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseSync): void {
