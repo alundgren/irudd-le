@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import {
   PROTOCOL_VERSION,
+  type AssetContentType,
   type Channel,
   type RenderStatus,
   type Revision,
@@ -564,6 +565,69 @@ export class Store {
       | undefined;
     if (!row) return undefined;
     return JSON.parse(row.profile) as TargetProfile;
+  }
+
+  /**
+   * Stores the blob content-addressably (deduplicated globally by sha256 id)
+   * and grants the uploading channel visibility of it. The grant -- not the
+   * blob write -- decides 'granted' vs 'already_granted': re-uploading
+   * identical bytes to the same channel is idempotent, but the first upload
+   * of already-known bytes to a *different* channel still counts as newly
+   * granted for that channel.
+   */
+  createAssetForChannel(
+    channel: string,
+    asset: { id: string; contentType: AssetContentType; byteLength: number; data: Uint8Array }
+  ): 'granted' | 'already_granted' {
+    this.db.exec('BEGIN');
+    try {
+      // PNG and WebP signatures are mutually exclusive, so a dedup hit on id
+      // (sha256 of bytes) can never legitimately disagree on content_type --
+      // id is deliberately the only identity key here, not (id, content_type).
+      this.db
+        .prepare(
+          'INSERT INTO assets (id, content_type, byte_length, data, createdAt) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING'
+        )
+        .run(asset.id, asset.contentType, asset.byteLength, asset.data, Date.now());
+      const grant = this.db
+        .prepare(
+          'INSERT INTO channel_assets (channel, asset_id, createdAt) VALUES (?, ?, ?) ON CONFLICT(channel, asset_id) DO NOTHING'
+        )
+        .run(channel, asset.id, Date.now());
+      this.db.exec('COMMIT');
+      return grant.changes > 0 ? 'granted' : 'already_granted';
+    } catch (e) {
+      this.db.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
+  /** Undefined both when the asset id is unknown and when it was never granted to this channel -- the two are indistinguishable from outside. */
+  getAssetForChannel(
+    channel: string,
+    id: string
+  ): { contentType: AssetContentType; byteLength: number; sha256: string; data: Uint8Array } | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT a.content_type AS contentType, a.byte_length AS byteLength, a.data AS data
+           FROM channel_assets ca
+           JOIN assets a ON a.id = ca.asset_id
+          WHERE ca.channel = ? AND ca.asset_id = ?`
+      )
+      .get(channel, id) as { contentType: string; byteLength: number; data: Uint8Array } | undefined;
+    if (!row) return undefined;
+    return { contentType: row.contentType as AssetContentType, byteLength: row.byteLength, sha256: id, data: row.data };
+  }
+
+  /** Which of `ids` this channel has not been granted -- used to reject a revision manifest before it ever reaches publishRevision. */
+  findMissingAssetIds(channel: string, ids: string[]): string[] {
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(`SELECT asset_id AS assetId FROM channel_assets WHERE channel = ? AND asset_id IN (${placeholders})`)
+      .all(channel, ...ids) as { assetId: string }[];
+    const found = new Set(rows.map((r) => r.assetId));
+    return ids.filter((id) => !found.has(id));
   }
 }
 

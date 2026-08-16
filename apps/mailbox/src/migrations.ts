@@ -137,6 +137,36 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE channel_current_revisions_new RENAME TO channel_current_revisions;
     `,
   },
+  {
+    version: 6,
+    sql: `
+      -- Content-addressed: id is the sha256 hex digest of the bytes, so
+      -- identical uploads (even from different channels) dedupe onto one row.
+      -- Not tied to revisions.asset_ids (still a plain JSON column on
+      -- revisions), so retention sweeping old revisions never has to touch
+      -- this table -- reclaiming unreferenced rows is deliberately deferred.
+      CREATE TABLE assets (
+        id TEXT PRIMARY KEY,
+        content_type TEXT NOT NULL,
+        byte_length INTEGER NOT NULL,
+        data BLOB NOT NULL,
+        createdAt INTEGER NOT NULL
+      );
+
+      -- Grants a channel visibility of an asset. The blob store above is
+      -- global and deduplicated, but access is per channel: a publisher
+      -- token for one channel must not be able to fetch an asset it never
+      -- uploaded just because another channel happened to upload the same
+      -- bytes first, and a revision may only reference an asset id its own
+      -- channel has been granted.
+      CREATE TABLE channel_assets (
+        channel TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+        asset_id TEXT NOT NULL REFERENCES assets(id),
+        createdAt INTEGER NOT NULL,
+        PRIMARY KEY (channel, asset_id)
+      );
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseSync): void {
