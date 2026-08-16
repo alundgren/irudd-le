@@ -2,7 +2,7 @@
  * The outer renderer is trusted local code. Published HTML stays inside the
  * opaque sandboxed iframe and never receives this preload bridge.
  */
-import { measurementBootstrap } from './measurement-bootstrap.js';
+import { sandboxedDocument } from './asset-sandbox.js';
 
 function must<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -146,7 +146,6 @@ window.overlay.revisions.onDiscard((attemptId) => {
 });
 
 async function stageRevision(attemptId: string, revision: RevisionActivation, deadlineAt: number): Promise<RenderMetrics> {
-  if (revision.assetIds.length > 0) throw new Error('Required assets cannot be staged yet');
   if (discardedAttempts.has(attemptId)) throw new Error('The activation attempt was discarded');
   const staged = document.createElement('iframe');
   // The nonce-bound bootstrap is the only script CSP permits. Published
@@ -160,12 +159,18 @@ async function stageRevision(attemptId: string, revision: RevisionActivation, de
   const height = Math.max(1, Math.round(visible.height));
   const measurementToken = crypto.randomUUID();
   staged.style.cssText = 'position:fixed; left:-100000px; top:-100000px; width:' + width + 'px; height:' + height + 'px; border:0; pointer-events:none';
-  staged.srcdoc = sandboxedDocument(revision.html, measurementToken);
+  staged.srcdoc = sandboxedDocument(revision.html, revision.assetSources, measurementToken);
 
   try {
     const metrics = await new Promise<RenderMetrics>((resolve, reject) => {
       const onMessage = (event: MessageEvent<unknown>): void => {
-        if (event.source !== staged.contentWindow || !isRenderMetricsMessage(event.data, measurementToken)) return;
+        if (event.source !== staged.contentWindow) return;
+        if (isRenderFailureMessage(event.data, measurementToken)) {
+          cleanup();
+          reject(new Error(event.data.error));
+          return;
+        }
+        if (!isRenderMetricsMessage(event.data, measurementToken)) return;
         cleanup();
         resolve(event.data.metrics);
       };
@@ -196,15 +201,16 @@ async function stageRevision(attemptId: string, revision: RevisionActivation, de
   }
 }
 
-function sandboxedDocument(html: string, measurementToken: string): string {
-  const bootstrap = `<script nonce="${measurementToken}">${measurementBootstrap(measurementToken)}</script>`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; font-src data:; form-action 'none'; img-src data: blob:; object-src 'none'; script-src 'nonce-${measurementToken}'; style-src 'unsafe-inline'"></head><body>${html}${bootstrap}</body></html>`;
-}
-
 function isRenderMetricsMessage(value: unknown, token: string): value is { token: string; metrics: RenderMetrics } {
   if (!value || typeof value !== 'object') return false;
   const message = value as Record<string, unknown>;
   if (message.type !== 'overlay:render-metrics' || message.token !== token || !message.metrics || typeof message.metrics !== 'object') return false;
   const metrics = message.metrics as Record<string, unknown>;
   return ['width', 'height', 'scrollWidth', 'scrollHeight'].every((key) => typeof metrics[key] === 'number' && Number.isFinite(metrics[key]) && metrics[key] >= 0);
+}
+
+function isRenderFailureMessage(value: unknown, token: string): value is { token: string; error: string } {
+  if (!value || typeof value !== 'object') return false;
+  const message = value as Record<string, unknown>;
+  return message.type === 'overlay:render-failure' && message.token === token && typeof message.error === 'string';
 }

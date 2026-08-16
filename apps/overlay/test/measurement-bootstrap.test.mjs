@@ -20,6 +20,7 @@ test('reports metrics only after staged images and fonts settle', async () => {
   const messages = [];
   const image = {
     complete: false,
+    naturalWidth: 1,
     addEventListener(type, listener) {
       if (type === 'load') imageLoaded.promise.then(listener);
     },
@@ -57,4 +58,28 @@ test('reports metrics only after staged images and fonts settle', async () => {
     token: 'nonce-1',
     metrics: { width: 800, height: 480, scrollWidth: 920, scrollHeight: 600 },
   }]);
+});
+
+test('signals a staged-image decode failure instead of allowing a broken image to activate', async () => {
+  const messages = [];
+  const image = { complete: true, naturalWidth: 0, decode: () => Promise.reject(new Error('broken image')) };
+  const context = {
+    document: {
+      images: [image],
+      documentElement: { clientWidth: 800, clientHeight: 480, scrollWidth: 800, scrollHeight: 480 },
+      body: { scrollWidth: 800, scrollHeight: 480 },
+    },
+    parent: { postMessage: (message) => messages.push(message) },
+    requestAnimationFrame: (callback) => queueMicrotask(callback),
+    Promise,
+  };
+  Function('document', 'parent', 'requestAnimationFrame', 'Promise', measurementBootstrap('nonce-broken'))(
+    context.document,
+    context.parent,
+    context.requestAnimationFrame,
+    Promise
+  );
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(messages, [{ type: 'overlay:render-failure', token: 'nonce-broken', error: 'broken image' }]);
 });
