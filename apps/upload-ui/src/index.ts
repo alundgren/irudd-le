@@ -1,9 +1,12 @@
 import {
   PROTOCOL_VERSION,
+  assetContentType,
+  assetSchema,
   channelSchema,
   protocolErrorSchema,
   revisionSchema,
   targetProfileSchema,
+  type Asset,
   type Revision,
   type TargetProfile,
 } from '@irudd-le/protocol';
@@ -29,6 +32,7 @@ export interface PublicationInput {
   title: string;
   description: string;
   html: string;
+  assetIds?: readonly string[];
 }
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -67,7 +71,7 @@ export class UploadClient {
       title: input.title,
       description: input.description,
       html: input.html,
-      assetIds: [],
+      assetIds: input.assetIds ?? [],
     });
     const response = await this.fetcher(this.url(`/v1/channels/${encodeURIComponent(revision.channel)}/revisions/current`), {
       method: 'PUT',
@@ -79,6 +83,36 @@ export class UploadClient {
     });
     if (!response.ok) throw await apiError(response);
     return revisionSchema.parse(await response.json());
+  }
+
+  /** Uploads only PNG/WebP bytes; the mailbox returns their immutable identity. */
+  async uploadAsset(channel: string, image: Blob): Promise<Asset> {
+    this.assertChannel(channel);
+    const contentType = assetContentType(image.type.split(';', 1)[0]?.trim().toLowerCase(), 'image.contentType');
+    const response = await this.fetcher(this.url(`/v1/channels/${encodeURIComponent(channel)}/assets`), {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${this.secret}`,
+        'content-type': contentType,
+      },
+      body: image,
+    });
+    if (!response.ok) throw await apiError(response);
+    return assetSchema.parse(await response.json());
+  }
+
+  /**
+   * The publisher credential stays in the outer UI; callers turn the returned
+   * bytes into a short-lived data representation for the opaque preview iframe.
+   */
+  async fetchAsset(channel: string, assetId: string): Promise<Blob> {
+    this.assertChannel(channel);
+    const response = await this.fetcher(this.url(`/v1/channels/${encodeURIComponent(channel)}/assets/${encodeURIComponent(assetId)}`), {
+      headers: { authorization: `Bearer ${this.secret}` },
+    });
+    if (!response.ok) throw await apiError(response);
+    const contentType = assetContentType(response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase(), 'asset.contentType');
+    return new Blob([await response.blob()], { type: contentType });
   }
 
   private assertChannel(channel: string): void {
@@ -108,6 +142,7 @@ export function mountUploadUi(root: HTMLElement): void {
   const description = must<HTMLTextAreaElement>(root, 'description');
   const html = must<HTMLTextAreaElement>(root, 'html');
   const file = must<HTMLInputElement>(root, 'html-file');
+  const imageFile = must<HTMLInputElement>(root, 'image-file');
   const publish = must<HTMLButtonElement>(root, 'publish');
   const target = must<HTMLButtonElement>(root, 'load-target');
   const status = must<HTMLElement>(root, 'status');
@@ -116,6 +151,9 @@ export function mountUploadUi(root: HTMLElement): void {
   const preview = must<HTMLIFrameElement>(root, 'preview');
 
   let loadedTarget: { context: string; profile: TargetProfile } | null = null;
+  let previewAsset: { id: string; dataUrl: string } | null = null;
+  let assetRequest = 0;
+  let assetPending = false;
 
   const client = (): UploadClient => new UploadClient(mailboxUrl.value.trim(), secret.value.trim());
   const targetContext = (): string => [mailboxUrl.value.trim(), channel.value.trim(), secret.value.trim()].join('\n');
@@ -123,12 +161,17 @@ export function mountUploadUi(root: HTMLElement): void {
     status.dataset.kind = 'error';
     status.textContent = error instanceof Error ? error.message : 'The request failed';
   };
+  const releasePreviewAsset = (): void => {
+    if (!previewAsset) return;
+    previewAsset = null;
+  };
 
   const showPreview = (): void => {
     const profile = loadedTarget?.context === targetContext() ? loadedTarget.profile : null;
     if (!profile) {
       preview.hidden = true;
       previewStage.style.height = '';
+      preview.srcdoc = previewDocument(html.value);
       previewStatus.textContent = 'No paired target — a pixel-accurate preview is unavailable.';
       return;
     }
@@ -142,7 +185,7 @@ export function mountUploadUi(root: HTMLElement): void {
     preview.style.transformOrigin = 'top left';
     preview.style.pointerEvents = 'none';
     previewStage.style.height = `${Math.ceil(profile.contentBox.height * scale)}px`;
-    preview.srcdoc = previewDocument(html.value);
+    preview.srcdoc = previewDocument(html.value, previewAsset);
     previewStatus.textContent = `Previewing the paired target at ${profile.contentBox.width}×${profile.contentBox.height}.`;
   };
 
@@ -165,6 +208,9 @@ export function mountUploadUi(root: HTMLElement): void {
   for (const input of [mailboxUrl, channel, secret]) {
     input.addEventListener('input', () => {
       loadedTarget = null;
+      assetRequest += 1;
+      assetPending = false;
+      releasePreviewAsset();
       showPreview();
     });
   }
@@ -176,9 +222,40 @@ export function mountUploadUi(root: HTMLElement): void {
       showPreview();
     }, showError);
   });
+  imageFile.addEventListener('change', () => {
+    const selected = imageFile.files?.[0];
+    const request = ++assetRequest;
+    assetPending = false;
+    releasePreviewAsset();
+    showPreview();
+    if (!selected) return;
+    const context = targetContext();
+    const assetClient = client();
+    const assetChannel = channel.value.trim();
+    assetPending = true;
+    status.textContent = 'Uploading image asset…';
+    void assetClient.uploadAsset(assetChannel, selected).then(async (asset) => {
+      if (request !== assetRequest || context !== targetContext()) return;
+      const image = await assetClient.fetchAsset(assetChannel, asset.id);
+      if (request !== assetRequest || context !== targetContext()) return;
+      const dataUrl = await imageDataUrl(image);
+      if (request !== assetRequest || context !== targetContext()) return;
+      previewAsset = { id: asset.id, dataUrl };
+      assetPending = false;
+      showPreview();
+    }).catch((error) => {
+      if (request !== assetRequest || context !== targetContext()) return;
+      assetPending = false;
+      showError(error);
+    });
+  });
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
+    if (assetPending) {
+      showError(new Error('Wait for the image asset to finish uploading before publishing'));
+      return;
+    }
     publish.disabled = true;
     status.textContent = '';
     void client().publish({
@@ -186,7 +263,8 @@ export function mountUploadUi(root: HTMLElement): void {
       profileVersion: loadedTarget?.context === targetContext() ? loadedTarget.profile.version : 1,
       title: title.value.trim(),
       description: description.value.trim(),
-      html: html.value,
+      html: publishedHtml(html.value, previewAsset?.id),
+      assetIds: previewAsset ? [previewAsset.id] : [],
     }).then((revision) => {
       status.dataset.kind = 'success';
       status.textContent = `Published “${revision.title}” atomically.`;
@@ -196,6 +274,10 @@ export function mountUploadUi(root: HTMLElement): void {
   });
 
   window.addEventListener('resize', showPreview);
+  window.addEventListener('beforeunload', () => {
+    releasePreviewAsset();
+    preview.srcdoc = previewDocument(html.value);
+  }, { once: true });
   showPreview();
 }
 
@@ -206,8 +288,27 @@ function must<T extends HTMLElement>(root: HTMLElement, id: string): T {
 }
 
 /** The document has an opaque, scriptless sandbox and a CSP that permits no network or host bridge. */
-export function previewDocument(html: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'; navigate-to 'none'; object-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:"></head><body>${sanitizePreviewMarkup(html)}</body></html>`;
+export function previewDocument(html: string, image?: { id: string; dataUrl: string } | null): string {
+  const uploadedImage = image ? `<img data-uploaded-asset="${escapeAttribute(image.id)}" src="${escapeAttribute(image.dataUrl)}" alt="Uploaded image preview">` : '';
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'; navigate-to 'none'; object-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:"></head><body>${sanitizePreviewMarkup(html)}${uploadedImage}</body></html>`;
+}
+
+/** The overlay resolves this immutable reference from its verified asset cache. */
+function publishedHtml(html: string, assetId?: string): string {
+  return assetId ? `${html}<img src="asset:${escapeAttribute(assetId)}" alt="Uploaded image">` : html;
+}
+
+function escapeAttribute(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+function imageDataUrl(image: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener('load', () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Image preview could not be encoded')));
+    reader.addEventListener('error', () => reject(reader.error ?? new Error('Image preview could not be encoded')));
+    reader.readAsDataURL(image);
+  });
 }
 
 function sanitizePreviewMarkup(html: string): string {
@@ -242,6 +343,7 @@ const shell = `
     <label>Description <textarea id="description" maxlength="2000"></textarea></label>
     <label>Paste HTML <textarea id="html" required></textarea></label>
     <label>or choose an HTML file <input id="html-file" type="file" accept="text/html,.html,.htm"></label>
+    <label>Upload PNG or WebP image <input id="image-file" type="file" accept="image/png,image/webp"></label>
     <section id="preview-stage" aria-label="Target preview"><iframe id="preview" title="Sandboxed target preview" sandbox="" referrerpolicy="no-referrer"></iframe></section>
     <button id="publish" type="submit">Publish</button>
     <p id="status" role="status" aria-live="polite"></p>
