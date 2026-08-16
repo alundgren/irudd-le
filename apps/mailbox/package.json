@@ -8,7 +8,7 @@
   "scripts": {
     "build": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.json",
     "typecheck": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.json --noEmit",
-    "test": "corepack pnpm build && node --test build/mailbox.test.js",
+    "test": "corepack pnpm build && node --test build/*.test.js",
     "start": "corepack pnpm build && node build/index.js"
   },
   "dependencies": {

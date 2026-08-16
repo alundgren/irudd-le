@@ -71,6 +71,18 @@ whoever is looking at the device for the code before pairing.</p>
 </table>
 <div id="targetError" class="error"></div>
 
+<h2>Revision history</h2>
+<p>Roll back an accidental publication by picking an older retained revision.
+Only the latest 20 revisions per channel are kept.</p>
+<label for="historyChannel">Channel id</label>
+<input id="historyChannel" placeholder="main" />
+<button id="loadHistoryBtn">Load history</button>
+<div id="historyError" class="error"></div>
+<table id="historyTable">
+  <thead><tr><th>Title</th><th>Id</th><th>Published by</th><th>Created</th><th>Current</th><th></th></tr></thead>
+  <tbody></tbody>
+</table>
+
 <script>
 function adminToken() { return document.getElementById('adminToken').value.trim(); }
 
@@ -224,6 +236,75 @@ async function loadTargets() {
       }
     });
     actionCell.appendChild(btn);
+    tr.appendChild(actionCell);
+    tbody.appendChild(tr);
+  }
+}
+
+document.getElementById('loadHistoryBtn').addEventListener('click', loadHistory);
+
+let historyCurrentRevisionId = null;
+
+async function loadHistory() {
+  const channel = document.getElementById('historyChannel').value.trim();
+  const tbody = document.querySelector('#historyTable tbody');
+  const errorEl = document.getElementById('historyError');
+  tbody.innerHTML = '';
+  errorEl.textContent = '';
+  historyCurrentRevisionId = null;
+  if (!channel) {
+    errorEl.textContent = 'Enter a channel id first.';
+    return;
+  }
+  let data;
+  try {
+    data = await api('/v1/channels/' + encodeURIComponent(channel) + '/revisions', { method: 'GET' });
+  } catch (e) {
+    errorEl.textContent = String(e.message || e);
+    return;
+  }
+  for (const r of data.revisions) {
+    if (r.current) historyCurrentRevisionId = r.id;
+    const tr = document.createElement('tr');
+    const cell = (text) => {
+      const td = document.createElement('td');
+      td.textContent = text;
+      return td;
+    };
+    tr.appendChild(cell(r.title));
+    tr.appendChild(cell(r.id));
+    tr.appendChild(cell(r.publishedByLabel || r.publishedBy || ''));
+    tr.appendChild(cell(new Date(r.createdAt).toISOString()));
+    tr.appendChild(cell(r.current ? 'current' : ''));
+
+    const actionCell = document.createElement('td');
+    if (!r.current) {
+      const btn = document.createElement('button');
+      btn.textContent = 'Roll back to this';
+      btn.addEventListener('click', async () => {
+        errorEl.textContent = '';
+        try {
+          await api(
+            '/v1/channels/' + encodeURIComponent(channel) + '/revisions/' + encodeURIComponent(r.id) + '/rollback',
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                protocolVersion: 1,
+                // Not crypto.randomUUID(): that requires a secure context, and this
+                // admin UI may be reached over plain HTTP on a LAN. A collision just
+                // surfaces as a 409 the admin can retry, so Math.random() is enough.
+                newRevisionId: 'rollback-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10),
+                expectedCurrentRevisionId: historyCurrentRevisionId,
+              }),
+            }
+          );
+          await loadHistory();
+        } catch (e) {
+          errorEl.textContent = String(e.message || e);
+        }
+      });
+      actionCell.appendChild(btn);
+    }
     tr.appendChild(actionCell);
     tbody.appendChild(tr);
   }

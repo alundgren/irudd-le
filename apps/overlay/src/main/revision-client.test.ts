@@ -17,6 +17,8 @@ test('fetches and validates the durable current revision with the target credent
       profileVersion: 1,
       html: '<h1>hello</h1>',
       assetIds: [],
+      title: 'Hello guide',
+      description: null,
     }));
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -30,6 +32,8 @@ test('fetches and validates the durable current revision with the target credent
       profileVersion: 1,
       html: '<h1>hello</h1>',
       assetIds: [],
+      title: 'Hello guide',
+      description: null,
     });
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
