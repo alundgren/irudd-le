@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
 import { createMailbox, type MailboxOptions } from './index';
@@ -89,6 +90,8 @@ function publishableRevision(overrides: Record<string, unknown> = {}): Record<st
     profileVersion: 1,
     html: '<h1>hello</h1>',
     assetIds: [],
+    title: 'Guide',
+    description: null,
     ...overrides,
   };
 }
@@ -576,6 +579,326 @@ test('conditionally publishes only when the expected current revision still matc
       headers: authHeader(reader.secret),
     });
     assert.deepEqual(await jsonBody(current), publishableRevision({ id: 'rev-002', html: '<h1>second</h1>' }));
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('publishes a revision with full metadata and lists/inspects it through the history API', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+    const reader = await mintToken(base, ADMIN_SECRET, 'reader', 'main', 'Overlay main');
+
+    const published = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision({ title: 'Leveling guide', description: 'Act 1 route' })),
+    });
+    assert.equal(published.status, 201);
+
+    const list = await fetch(new URL('/v1/channels/main/revisions', base), { method: 'GET', headers: authHeader(reader.secret) });
+    assert.equal(list.status, 200);
+    const { revisions } = await jsonBody(list);
+    assert.equal(revisions.length, 1);
+    assert.equal(revisions[0].id, 'rev-001');
+    assert.equal(revisions[0].title, 'Leveling guide');
+    assert.equal(revisions[0].description, 'Act 1 route');
+    assert.equal(revisions[0].current, true);
+    assert.equal(revisions[0].publishedBy, publisher.id);
+    assert.equal(revisions[0].publishedByLabel, 'Guide bot');
+    assert.equal(revisions[0].rolledBackFrom, null);
+    assert.equal(typeof revisions[0].contentHash, 'string');
+    assert.ok(revisions[0].contentHash.length > 0);
+    assert.ok(revisions[0].createdAt > 0);
+    assert.equal(revisions[0].html, undefined);
+
+    const detail = await fetch(new URL('/v1/channels/main/revisions/rev-001', base), { method: 'GET', headers: authHeader(reader.secret) });
+    assert.equal(detail.status, 200);
+    const detailBody = await jsonBody(detail);
+    assert.equal(detailBody.html, '<h1>hello</h1>');
+    assert.equal(detailBody.current, true);
+    assert.equal(detailBody.contentHash, revisions[0].contentHash);
+
+    const missing = await fetch(new URL('/v1/channels/main/revisions/nope', base), { method: 'GET', headers: authHeader(reader.secret) });
+    assert.equal(missing.status, 404);
+    assert.equal((await jsonBody(missing)).code, 'revision_not_found');
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('rolls back to an older revision, creating a new current revision that survives restart', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'mailbox-rollback-'));
+  const databasePath = path.join(dir, 'mailbox.db');
+  try {
+    const first = createMailbox({ ...baseOptions(), databasePath });
+    await first.start();
+    let publisherSecret: string;
+    let readerSecret: string;
+    try {
+      await createChannel(first.url, ADMIN_SECRET);
+      publisherSecret = (await mintToken(first.url, ADMIN_SECRET, 'publisher', 'main', 'Guide bot')).secret;
+      readerSecret = (await mintToken(first.url, ADMIN_SECRET, 'reader', 'main', 'Overlay main')).secret;
+
+      await fetch(new URL('/v1/channels/main/revisions/current', first.url), {
+        method: 'PUT',
+        headers: jsonHeaders(publisherSecret),
+        body: JSON.stringify(publishableRevision({ title: 'Original' })),
+      });
+      await fetch(new URL('/v1/channels/main/revisions/current', first.url), {
+        method: 'PUT',
+        headers: jsonHeaders(publisherSecret),
+        body: JSON.stringify(publishableRevision({ id: 'rev-002', html: '<h1>accidental</h1>', title: 'Accidental publish' })),
+      });
+
+      const rollback = await fetch(new URL('/v1/channels/main/revisions/rev-001/rollback', first.url), {
+        method: 'POST',
+        headers: jsonHeaders(publisherSecret),
+        body: JSON.stringify({ protocolVersion: 1, newRevisionId: 'rev-003' }),
+      });
+      assert.equal(rollback.status, 201);
+      const rollbackBody = await jsonBody(rollback);
+      assert.equal(rollbackBody.id, 'rev-003');
+      assert.equal(rollbackBody.html, '<h1>hello</h1>');
+      assert.equal(rollbackBody.title, 'Original');
+      assert.equal(rollbackBody.rolledBackFrom, 'rev-001');
+      assert.equal(rollbackBody.current, true);
+    } finally {
+      await first.stop();
+    }
+
+    const second = createMailbox({ ...baseOptions(), databasePath, adminBootstrapToken: undefined });
+    await second.start();
+    try {
+      const current = await fetch(new URL('/v1/channels/main/revisions/current', second.url), {
+        method: 'GET',
+        headers: authHeader(readerSecret),
+      });
+      const currentBody = await jsonBody(current);
+      assert.equal(currentBody.id, 'rev-003');
+      assert.equal(currentBody.html, '<h1>hello</h1>');
+
+      const list = await fetch(new URL('/v1/channels/main/revisions', second.url), { method: 'GET', headers: authHeader(readerSecret) });
+      const { revisions } = await jsonBody(list);
+      assert.deepEqual(revisions.map((r: { id: string }) => r.id), ['rev-003', 'rev-002', 'rev-001']);
+      assert.equal(revisions[0].current, true);
+      assert.equal(revisions[1].current, false);
+      assert.equal(revisions[2].current, false);
+    } finally {
+      await second.stop();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rollback respects the expected-current-revision check under concurrent modification', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+
+    await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision()),
+    });
+    await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision({ id: 'rev-002', html: '<h1>second</h1>' })),
+    });
+
+    const stale = await fetch(new URL('/v1/channels/main/revisions/rev-001/rollback', base), {
+      method: 'POST',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify({ protocolVersion: 1, newRevisionId: 'rev-003', expectedCurrentRevisionId: 'rev-001' }),
+    });
+    assert.equal(stale.status, 409);
+    assert.equal((await jsonBody(stale)).code, 'current_revision_conflict');
+
+    const ok = await fetch(new URL('/v1/channels/main/revisions/rev-001/rollback', base), {
+      method: 'POST',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify({ protocolVersion: 1, newRevisionId: 'rev-003', expectedCurrentRevisionId: 'rev-002' }),
+    });
+    assert.equal(ok.status, 201);
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('rejects rollback to a revision id that does not exist for the channel, and rejects it from a reader credential', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+    const reader = await mintToken(base, ADMIN_SECRET, 'reader', 'main', 'Overlay main');
+
+    await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision()),
+    });
+
+    const missing = await fetch(new URL('/v1/channels/main/revisions/does-not-exist/rollback', base), {
+      method: 'POST',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify({ protocolVersion: 1, newRevisionId: 'rev-002' }),
+    });
+    assert.equal(missing.status, 404);
+    assert.equal((await jsonBody(missing)).code, 'revision_not_found');
+
+    const forbidden = await fetch(new URL('/v1/channels/main/revisions/rev-001/rollback', base), {
+      method: 'POST',
+      headers: jsonHeaders(reader.secret),
+      body: JSON.stringify({ protocolVersion: 1, newRevisionId: 'rev-002' }),
+    });
+    assert.equal(forbidden.status, 403);
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test("reports each revision's own recorded protocol version, not the server's current constant", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'mailbox-protocol-version-'));
+  const databasePath = path.join(dir, 'mailbox.db');
+  try {
+    const first = createMailbox({ ...baseOptions(), databasePath });
+    await first.start();
+    let readerSecret: string;
+    try {
+      await createChannel(first.url, ADMIN_SECRET);
+      const publisher = await mintToken(first.url, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+      readerSecret = (await mintToken(first.url, ADMIN_SECRET, 'reader', 'main', 'Overlay main')).secret;
+      await fetch(new URL('/v1/channels/main/revisions/current', first.url), {
+        method: 'PUT',
+        headers: jsonHeaders(publisher.secret),
+        body: JSON.stringify(publishableRevision()),
+      });
+    } finally {
+      await first.stop();
+    }
+
+    // Directly age a revision's recorded protocol version, simulating one
+    // published under a since-superseded version -- not reachable through the
+    // API today since there is only one supported protocolVersion.
+    const db = new DatabaseSync(databasePath);
+    db.exec("UPDATE revisions SET protocolVersion = 0 WHERE channel = 'main' AND id = 'rev-001'");
+    db.close();
+
+    const second = createMailbox({ ...baseOptions(), databasePath, adminBootstrapToken: undefined });
+    await second.start();
+    try {
+      const list = await fetch(new URL('/v1/channels/main/revisions', second.url), { method: 'GET', headers: authHeader(readerSecret) });
+      assert.equal((await jsonBody(list)).revisions[0].protocolVersion, 0);
+
+      const detail = await fetch(new URL('/v1/channels/main/revisions/rev-001', second.url), { method: 'GET', headers: authHeader(readerSecret) });
+      assert.equal((await jsonBody(detail)).protocolVersion, 0);
+
+      const current = await fetch(new URL('/v1/channels/main/revisions/current', second.url), { method: 'GET', headers: authHeader(readerSecret) });
+      assert.equal((await jsonBody(current)).protocolVersion, 0);
+    } finally {
+      await second.stop();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rollback recomputes a content hash for a source revision published before hashing existed', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'mailbox-legacy-hash-'));
+  const databasePath = path.join(dir, 'mailbox.db');
+  try {
+    const first = createMailbox({ ...baseOptions(), databasePath });
+    await first.start();
+    let publisherSecret: string;
+    try {
+      await createChannel(first.url, ADMIN_SECRET);
+      publisherSecret = (await mintToken(first.url, ADMIN_SECRET, 'publisher', 'main', 'Guide bot')).secret;
+      await fetch(new URL('/v1/channels/main/revisions/current', first.url), {
+        method: 'PUT',
+        headers: jsonHeaders(publisherSecret),
+        body: JSON.stringify(publishableRevision()),
+      });
+      await fetch(new URL('/v1/channels/main/revisions/current', first.url), {
+        method: 'PUT',
+        headers: jsonHeaders(publisherSecret),
+        body: JSON.stringify(publishableRevision({ id: 'rev-002', html: '<h1>second</h1>' })),
+      });
+    } finally {
+      await first.stop();
+    }
+
+    // Simulate rev-001 having been published before migration v5 introduced
+    // content hashing.
+    const db = new DatabaseSync(databasePath);
+    db.exec("UPDATE revisions SET content_hash = NULL WHERE channel = 'main' AND id = 'rev-001'");
+    db.close();
+
+    const second = createMailbox({ ...baseOptions(), databasePath, adminBootstrapToken: undefined });
+    await second.start();
+    try {
+      const rollback = await fetch(new URL('/v1/channels/main/revisions/rev-001/rollback', second.url), {
+        method: 'POST',
+        headers: jsonHeaders(publisherSecret),
+        body: JSON.stringify({ protocolVersion: 1, newRevisionId: 'rev-003' }),
+      });
+      assert.equal(rollback.status, 201);
+      const rollbackBody = await jsonBody(rollback);
+      assert.equal(typeof rollbackBody.contentHash, 'string');
+      assert.ok(rollbackBody.contentHash.length > 0);
+    } finally {
+      await second.stop();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The just-published revision is always the newest by construction, so this
+// proves the 20-revision cap; it can't exercise the separate "never evict
+// current regardless of rank" guard in store.ts's sweepRetention (there is no
+// HTTP-reachable way to make current anything but the newest revision).
+test('retains only the latest 20 revisions per channel, keeping the just-published one current', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+    const reader = await mintToken(base, ADMIN_SECRET, 'reader', 'main', 'Overlay main');
+
+    for (let i = 1; i <= 25; i += 1) {
+      const id = `rev-${String(i).padStart(3, '0')}`;
+      const response = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+        method: 'PUT',
+        headers: jsonHeaders(publisher.secret),
+        body: JSON.stringify(publishableRevision({ id, html: `<h1>${id}</h1>` })),
+      });
+      assert.equal(response.status, 201);
+    }
+
+    const list = await fetch(new URL('/v1/channels/main/revisions', base), { method: 'GET', headers: authHeader(reader.secret) });
+    const { revisions } = await jsonBody(list);
+    assert.equal(revisions.length, 20);
+    assert.equal(revisions[0].id, 'rev-025');
+    assert.equal(revisions[0].current, true);
+    assert.equal(revisions[19].id, 'rev-006');
+
+    const evicted = await fetch(new URL('/v1/channels/main/revisions/rev-001', base), { method: 'GET', headers: authHeader(reader.secret) });
+    assert.equal(evicted.status, 404);
+
+    const current = await fetch(new URL('/v1/channels/main/revisions/current', base), { method: 'GET', headers: authHeader(reader.secret) });
+    assert.equal((await jsonBody(current)).id, 'rev-025');
   } finally {
     await mailbox.stop();
   }

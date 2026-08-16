@@ -14,6 +14,7 @@ import {
   registerTargetRequestSchema,
   renderStatusSchema,
   revisionSchema,
+  rollbackRequestSchema,
   targetProfileSchema,
   targetRegistrationSchema,
 } from './index';
@@ -95,6 +96,63 @@ test('rejects channel identifiers that are not slugs', () => {
     'revision.channel'
   );
   rejectsNonSlug(protocolEnvelopeSchema.parse, { channel: 'main', payload: {} }, 'channel', 'channel');
+});
+
+test('requires a revision title and accepts an optional description', () => {
+  const base = { id: 'rev-001', channel: 'main', profileVersion: 1, protocolVersion: PROTOCOL_VERSION, html: '<p>hi</p>', assetIds: [] };
+
+  assert.deepEqual(revisionSchema.parse({ ...base, title: 'Build guide', description: 'Leveling route' }), {
+    ...base,
+    title: 'Build guide',
+    description: 'Leveling route',
+  });
+  assert.deepEqual(revisionSchema.parse({ ...base, title: 'Build guide', description: null }), {
+    ...base,
+    title: 'Build guide',
+    description: null,
+  });
+  assert.deepEqual(revisionSchema.parse({ ...base, title: 'Build guide' }), {
+    ...base,
+    title: 'Build guide',
+    description: null,
+  });
+  assert.deepEqual(revisionSchema.parse({ ...base, title: 'Build guide', description: '' }), {
+    ...base,
+    title: 'Build guide',
+    description: null,
+  });
+
+  assert.throws(
+    () => revisionSchema.parse({ ...base, title: '' }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.path === 'revision.title'
+  );
+  assert.throws(
+    () => revisionSchema.parse({ ...base, title: 'x'.repeat(201) }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.path === 'revision.title'
+  );
+  assert.throws(
+    () => revisionSchema.parse({ ...base, title: 'Build guide', description: 'x'.repeat(2001) }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.path === 'revision.description'
+  );
+});
+
+test('validates a rollback request and treats an absent expected revision differently from null', () => {
+  assert.deepEqual(
+    rollbackRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, newRevisionId: 'rev-003' }),
+    { protocolVersion: PROTOCOL_VERSION, newRevisionId: 'rev-003' }
+  );
+  assert.deepEqual(
+    rollbackRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, newRevisionId: 'rev-003', expectedCurrentRevisionId: null }),
+    { protocolVersion: PROTOCOL_VERSION, newRevisionId: 'rev-003', expectedCurrentRevisionId: null }
+  );
+  assert.deepEqual(
+    rollbackRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, newRevisionId: 'rev-003', expectedCurrentRevisionId: 'rev-001' }),
+    { protocolVersion: PROTOCOL_VERSION, newRevisionId: 'rev-003', expectedCurrentRevisionId: 'rev-001' }
+  );
+  assert.throws(
+    () => rollbackRequestSchema.parse({ protocolVersion: PROTOCOL_VERSION, newRevisionId: 'rev-003', expectedCurrentRevisionId: '' }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.path === 'rollbackRequest.expectedCurrentRevisionId'
+  );
 });
 
 test('accepts a channel name that is not a slug', () => {

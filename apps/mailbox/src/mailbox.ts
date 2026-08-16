@@ -10,6 +10,7 @@ import {
   renderStatusObservationSchema,
   registerTargetRequestSchema,
   revisionPublicationSchema,
+  rollbackRequestSchema,
   type Channel,
   type CreatedToken,
   type HeartbeatResponse,
@@ -178,12 +179,35 @@ async function routeV1(
     const channelId = decodeURIComponent(currentMatch[1] ?? '');
     if (method === 'PUT') {
       if (!canAccessChannel(principal, channelId, ['publisher'])) return forbidden(res);
-      return publishRevision(req, res, store, channelId, maxBodyBytes, revisionEvents);
+      return publishRevision(req, res, store, channelId, maxBodyBytes, principal, revisionEvents);
     }
     if (method === 'GET') {
       if (!canAccessChannel(principal, channelId, ['publisher', 'reader', 'target'])) return forbidden(res);
       return getCurrentRevision(res, store, channelId);
     }
+  }
+  const revisionsListMatch = pathname.match(/^\/v1\/channels\/([^/]+)\/revisions$/);
+  if (revisionsListMatch && method === 'GET') {
+    const channelId = decodeURIComponent(revisionsListMatch[1] ?? '');
+    if (!canAccessChannel(principal, channelId, ['publisher', 'reader'])) return forbidden(res);
+    return listRevisionsHandler(res, store, channelId);
+  }
+  const rollbackMatch = pathname.match(/^\/v1\/channels\/([^/]+)\/revisions\/([^/]+)\/rollback$/);
+  if (rollbackMatch && method === 'POST') {
+    const channelId = decodeURIComponent(rollbackMatch[1] ?? '');
+    const sourceRevisionId = decodeURIComponent(rollbackMatch[2] ?? '');
+    if (!canAccessChannel(principal, channelId, ['publisher'])) return forbidden(res);
+    return rollbackRevisionHandler(req, res, store, channelId, sourceRevisionId, maxBodyBytes, principal, revisionEvents);
+  }
+  // "current" is matched above and never reaches here, so a revision whose id
+  // is literally "current" cannot be inspected by id -- an accepted, harmless
+  // gap rather than a route collision to resolve.
+  const revisionDetailMatch = pathname.match(/^\/v1\/channels\/([^/]+)\/revisions\/([^/]+)$/);
+  if (revisionDetailMatch && method === 'GET') {
+    const channelId = decodeURIComponent(revisionDetailMatch[1] ?? '');
+    const revisionId = decodeURIComponent(revisionDetailMatch[2] ?? '');
+    if (!canAccessChannel(principal, channelId, ['publisher', 'reader'])) return forbidden(res);
+    return getRevisionDetailHandler(res, store, channelId, revisionId);
   }
   const eventsMatch = pathname.match(/^\/v1\/channels\/([^/]+)\/events$/);
   if (eventsMatch && method === 'GET') {
@@ -283,6 +307,7 @@ async function publishRevision(
   store: Store,
   channelId: string,
   maxBodyBytes: number,
+  principal: Principal,
   revisionEvents: RevisionEvents
 ): Promise<void> {
   const result = await readJsonBody(req, maxBodyBytes);
@@ -315,7 +340,7 @@ async function publishRevision(
     );
   }
   try {
-    const result = store.publishRevision(channelId, revision, expectedCurrentRevisionId);
+    const result = store.publishRevision(channelId, revision, principal.id, expectedCurrentRevisionId);
     if (result === 'current_revision_conflict') {
       return sendError(
         res,
@@ -348,6 +373,81 @@ function getCurrentRevision(res: ServerResponse, store: Store, channelId: string
     return sendError(res, 404, 'no_current_revision', `Channel '${channelId}' has no current revision`);
   }
   return sendJson(res, 200, revision);
+}
+
+function listRevisionsHandler(res: ServerResponse, store: Store, channelId: string): void {
+  if (!store.getChannel(channelId)) {
+    return sendError(res, 404, 'channel_not_found', `Channel '${channelId}' not found`);
+  }
+  return sendJson(res, 200, { protocolVersion: PROTOCOL_VERSION, revisions: store.listRevisions(channelId) });
+}
+
+function getRevisionDetailHandler(res: ServerResponse, store: Store, channelId: string, revisionId: string): void {
+  if (!store.getChannel(channelId)) {
+    return sendError(res, 404, 'channel_not_found', `Channel '${channelId}' not found`);
+  }
+  const revision = store.getRevisionDetail(channelId, revisionId);
+  if (!revision) {
+    return sendError(res, 404, 'revision_not_found', `Revision '${revisionId}' not found for channel '${channelId}'`);
+  }
+  return sendJson(res, 200, revision);
+}
+
+async function rollbackRevisionHandler(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: Store,
+  channelId: string,
+  sourceRevisionId: string,
+  maxBodyBytes: number,
+  principal: Principal,
+  revisionEvents: RevisionEvents
+): Promise<void> {
+  const result = await readJsonBody(req, maxBodyBytes);
+  if (result.error) {
+    return sendError(res, result.error.status, result.error.code, result.error.message);
+  }
+  const parsed = rollbackRequestSchema.safeParse(result.value);
+  if (!parsed.success) {
+    return sendError(res, 400, parsed.error.code, parsed.error.message);
+  }
+  if (!store.getChannel(channelId)) {
+    return sendError(res, 404, 'channel_not_found', `Channel '${channelId}' not found`);
+  }
+  const { newRevisionId, expectedCurrentRevisionId } = parsed.data;
+  let outcome: 'rolled_back' | 'current_revision_conflict' | 'source_not_found';
+  try {
+    outcome = store.rollbackRevision(channelId, sourceRevisionId, newRevisionId, principal.id, expectedCurrentRevisionId);
+  } catch (e) {
+    if (isPrimaryKeyConflict(e)) {
+      return sendError(
+        res,
+        409,
+        'revision_conflict',
+        `Revision '${newRevisionId}' already exists for channel '${channelId}'`
+      );
+    }
+    throw e;
+  }
+  if (outcome === 'source_not_found') {
+    return sendError(
+      res,
+      404,
+      'revision_not_found',
+      `Revision '${sourceRevisionId}' not found for channel '${channelId}'`
+    );
+  }
+  if (outcome === 'current_revision_conflict') {
+    return sendError(
+      res,
+      409,
+      'current_revision_conflict',
+      `Channel '${channelId}' no longer has the expected current revision`
+    );
+  }
+  revisionEvents.publish(channelId, newRevisionId);
+  const revision = store.getRevisionDetail(channelId, newRevisionId);
+  return sendJson(res, 201, revision);
 }
 
 function isPrimaryKeyConflict(error: unknown): boolean {

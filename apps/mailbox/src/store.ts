@@ -1,6 +1,19 @@
+import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { PROTOCOL_VERSION, type Channel, type RenderStatus, type Revision, type TargetProfile, type TokenKind } from '@irudd-le/protocol';
+import {
+  PROTOCOL_VERSION,
+  type Channel,
+  type RenderStatus,
+  type Revision,
+  type RevisionDetail,
+  type RevisionSummary,
+  type TargetProfile,
+  type TokenKind,
+} from '@irudd-le/protocol';
 import { runMigrations } from './migrations';
+
+/** How many of a channel's most recent revisions retention keeps. */
+export const REVISION_RETENTION_LIMIT = 20;
 
 export interface TokenRecord {
   id: string;
@@ -72,41 +85,76 @@ export class Store {
   publishRevision(
     channel: string,
     revision: Revision,
+    publishedBy: string | null,
     expectedCurrentRevisionId?: string | null
   ): 'published' | 'current_revision_conflict' {
-    const htmlBlob = Buffer.from(revision.html, 'utf8');
-    const assetIdsJson = JSON.stringify(revision.assetIds);
     this.db.exec('BEGIN');
     try {
       if (expectedCurrentRevisionId !== undefined) {
-        const current = this.db
-          .prepare('SELECT revision_id AS revisionId FROM channel_current_revisions WHERE channel = ?')
-          .get(channel) as { revisionId: string } | undefined;
-        if ((current?.revisionId ?? null) !== expectedCurrentRevisionId) {
+        if (this.getCurrentRevisionId(channel) !== expectedCurrentRevisionId) {
           this.db.exec('ROLLBACK');
           return 'current_revision_conflict';
         }
       }
-      this.db
-        .prepare(
-          'INSERT INTO revisions (channel, id, protocolVersion, profileVersion, html, asset_ids, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)'
-        )
-        .run(
-          channel,
-          revision.id,
-          revision.protocolVersion,
-          revision.profileVersion,
-          htmlBlob,
-          assetIdsJson,
-          Date.now()
-        );
-      this.db
-        .prepare(
-          'INSERT INTO channel_current_revisions (channel, revision_id, updatedAt) VALUES (?, ?, ?) ON CONFLICT (channel) DO UPDATE SET revision_id = excluded.revision_id, updatedAt = excluded.updatedAt'
-      )
-        .run(channel, revision.id, Date.now());
+      this.insertRevision(channel, revision, publishedBy, null, hashHtml(revision.html));
+      this.repointCurrent(channel, revision.id);
+      this.sweepRetention(channel);
       this.db.exec('COMMIT');
       return 'published';
+    } catch (e) {
+      this.db.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
+  /**
+   * Creates a brand-new current revision by copying an older retained
+   * artifact's content, so the artifact being rolled back to is never
+   * mutated and the rollback itself is a fresh, audit-visible history event.
+   */
+  rollbackRevision(
+    channel: string,
+    sourceRevisionId: string,
+    newRevisionId: string,
+    rolledBackBy: string | null,
+    expectedCurrentRevisionId?: string | null
+  ): 'rolled_back' | 'current_revision_conflict' | 'source_not_found' {
+    this.db.exec('BEGIN');
+    try {
+      if (expectedCurrentRevisionId !== undefined) {
+        if (this.getCurrentRevisionId(channel) !== expectedCurrentRevisionId) {
+          this.db.exec('ROLLBACK');
+          return 'current_revision_conflict';
+        }
+      }
+      const source = this.db
+        .prepare(
+          `SELECT protocolVersion, profileVersion, html, asset_ids AS assetIds, title, description, content_hash AS contentHash
+             FROM revisions WHERE channel = ? AND id = ?`
+        )
+        .get(channel, sourceRevisionId) as SourceRevisionRow | undefined;
+      if (!source) {
+        this.db.exec('ROLLBACK');
+        return 'source_not_found';
+      }
+      const revision: Revision = {
+        id: newRevisionId,
+        channel,
+        protocolVersion: source.protocolVersion as Revision['protocolVersion'],
+        profileVersion: source.profileVersion,
+        html: Buffer.from(source.html).toString('utf8'),
+        assetIds: JSON.parse(source.assetIds) as string[],
+        title: source.title,
+        description: source.description,
+      };
+      // source.contentHash is null only for a revision published before v5
+      // introduced hashing; the content being copied is identical either way,
+      // so recomputing keeps every revision this code path creates hashed.
+      this.insertRevision(channel, revision, rolledBackBy, sourceRevisionId, source.contentHash ?? hashHtml(revision.html));
+      this.repointCurrent(channel, newRevisionId);
+      this.sweepRetention(channel);
+      this.db.exec('COMMIT');
+      return 'rolled_back';
     } catch (e) {
       this.db.exec('ROLLBACK');
       throw e;
@@ -116,7 +164,7 @@ export class Store {
   getCurrentRevision(channel: string): Revision | undefined {
     const row = this.db
       .prepare(
-        `SELECT r.id, r.profileVersion, r.html, r.asset_ids AS assetIds
+        `SELECT r.id, r.protocolVersion, r.profileVersion, r.html, r.asset_ids AS assetIds, r.title, r.description
            FROM revisions r
            JOIN channel_current_revisions c ON c.revision_id = r.id AND c.channel = r.channel
           WHERE c.channel = ?`
@@ -124,20 +172,111 @@ export class Store {
       .get(channel) as
       | {
           id: string;
+          protocolVersion: number;
           profileVersion: number;
           html: Uint8Array;
           assetIds: string;
+          title: string;
+          description: string | null;
         }
       | undefined;
     if (!row) return undefined;
     return {
-      protocolVersion: PROTOCOL_VERSION,
+      // The revision's own recorded protocol version, not the server's
+      // current constant -- see toRevisionSummary for the same distinction.
+      protocolVersion: row.protocolVersion as Revision['protocolVersion'],
       id: row.id,
       channel,
       profileVersion: row.profileVersion,
       html: Buffer.from(row.html).toString('utf8'),
       assetIds: JSON.parse(row.assetIds) as string[],
+      title: row.title,
+      description: row.description,
     };
+  }
+
+  listRevisions(channel: string): RevisionSummary[] {
+    const currentId = this.getCurrentRevisionId(channel);
+    const rows = this.db
+      .prepare(`${SELECT_REVISION_SUMMARY} WHERE r.channel = ? ORDER BY r.createdAt DESC, r.rowid DESC`)
+      .all(channel) as unknown as RevisionSummaryRow[];
+    return rows.map((row) => toRevisionSummary(channel, row, currentId));
+  }
+
+  getRevisionDetail(channel: string, id: string): RevisionDetail | undefined {
+    const currentId = this.getCurrentRevisionId(channel);
+    const row = this.db
+      .prepare(`SELECT ${REVISION_SUMMARY_COLUMNS}, r.html AS html${REVISION_SUMMARY_FROM} WHERE r.channel = ? AND r.id = ?`)
+      .get(channel, id) as (RevisionSummaryRow & { html: Uint8Array }) | undefined;
+    if (!row) return undefined;
+    return { ...toRevisionSummary(channel, row, currentId), html: Buffer.from(row.html).toString('utf8') };
+  }
+
+  private getCurrentRevisionId(channel: string): string | null {
+    const row = this.db
+      .prepare('SELECT revision_id AS revisionId FROM channel_current_revisions WHERE channel = ?')
+      .get(channel) as { revisionId: string } | undefined;
+    return row?.revisionId ?? null;
+  }
+
+  private repointCurrent(channel: string, revisionId: string): void {
+    this.db
+      .prepare(
+        'INSERT INTO channel_current_revisions (channel, revision_id, updatedAt) VALUES (?, ?, ?) ON CONFLICT (channel) DO UPDATE SET revision_id = excluded.revision_id, updatedAt = excluded.updatedAt'
+      )
+      .run(channel, revisionId, Date.now());
+  }
+
+  private insertRevision(
+    channel: string,
+    revision: Revision,
+    publishedBy: string | null,
+    rolledBackFrom: string | null,
+    contentHash: string | null
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO revisions
+           (channel, id, protocolVersion, profileVersion, html, asset_ids, title, description, content_hash, published_by, rolled_back_from, createdAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        channel,
+        revision.id,
+        revision.protocolVersion,
+        revision.profileVersion,
+        Buffer.from(revision.html, 'utf8'),
+        JSON.stringify(revision.assetIds),
+        revision.title,
+        revision.description,
+        contentHash,
+        publishedBy,
+        rolledBackFrom,
+        Date.now()
+      );
+  }
+
+  /**
+   * Keeps the latest `REVISION_RETENTION_LIMIT` revisions per channel by
+   * creation time (rowid insertion order breaks ties within the same
+   * millisecond). The current revision is always excluded from deletion
+   * regardless of its rank: the composite FK from `channel_current_revisions`
+   * added in migration v5 means a sweep that evicted it would fail loudly
+   * with a constraint error rather than dangle the pointer, but this makes
+   * that invariant explicit rather than incidental.
+   */
+  private sweepRetention(channel: string, keep = REVISION_RETENTION_LIMIT): void {
+    const currentId = this.getCurrentRevisionId(channel);
+    this.db
+      .prepare(
+        `DELETE FROM revisions
+          WHERE channel = ?
+            AND id IS NOT ?
+            AND rowid NOT IN (
+              SELECT rowid FROM revisions WHERE channel = ? ORDER BY createdAt DESC, rowid DESC LIMIT ?
+            )`
+      )
+      .run(channel, currentId, channel, keep);
   }
 
   createToken(token: NewToken): void {
@@ -426,6 +565,66 @@ export class Store {
     if (!row) return undefined;
     return JSON.parse(row.profile) as TargetProfile;
   }
+}
+
+/** Hashes only the HTML body -- two revisions with identical markup but different asset dependencies share a hash. */
+function hashHtml(html: string): string {
+  return createHash('sha256').update(html, 'utf8').digest('hex');
+}
+
+interface SourceRevisionRow {
+  protocolVersion: number;
+  profileVersion: number;
+  html: Uint8Array;
+  assetIds: string;
+  title: string;
+  description: string | null;
+  contentHash: string | null;
+}
+
+const REVISION_SUMMARY_COLUMNS = `
+  r.id, r.protocolVersion, r.title, r.description, r.profileVersion, r.asset_ids AS assetIds, r.content_hash AS contentHash,
+  r.published_by AS publishedBy, t.label AS publishedByLabel, r.createdAt, r.rolled_back_from AS rolledBackFrom`;
+
+const REVISION_SUMMARY_FROM = `
+    FROM revisions r
+    LEFT JOIN tokens t ON t.id = r.published_by`;
+
+const SELECT_REVISION_SUMMARY = `SELECT ${REVISION_SUMMARY_COLUMNS}${REVISION_SUMMARY_FROM}`;
+
+interface RevisionSummaryRow {
+  id: string;
+  protocolVersion: number;
+  title: string;
+  description: string | null;
+  profileVersion: number;
+  assetIds: string;
+  contentHash: string | null;
+  publishedBy: string | null;
+  publishedByLabel: string | null;
+  createdAt: number;
+  rolledBackFrom: string | null;
+}
+
+function toRevisionSummary(channel: string, row: RevisionSummaryRow, currentId: string | null): RevisionSummary {
+  return {
+    // The protocol version this specific revision was published under, not
+    // the server's current constant -- they happen to be equal today (there
+    // is only one protocol version) but must not be conflated.
+    protocolVersion: row.protocolVersion as RevisionSummary['protocolVersion'],
+    id: row.id,
+    channel,
+    title: row.title,
+    description: row.description,
+    profileVersion: row.profileVersion,
+    assetIds: JSON.parse(row.assetIds) as string[],
+    contentHash: row.contentHash,
+    publishedBy: row.publishedBy,
+    publishedByLabel: row.publishedByLabel,
+    createdAt: row.createdAt,
+    rolledBackFrom: row.rolledBackFrom,
+    current: row.id === currentId,
+  };
 }
 
 interface TokenRow {

@@ -13,6 +13,8 @@ const REVISION = {
   profileVersion: 1,
   html: '<h1>cached</h1>',
   assetIds: [],
+  title: 'Cached guide',
+  description: null,
 };
 
 const CACHE_KEY = 'mailbox-a/target-a/main';

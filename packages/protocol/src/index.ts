@@ -285,6 +285,14 @@ export interface Revision {
   protocolVersion: ProtocolVersion;
   html: string;
   assetIds: string[];
+  title: string;
+  description: string | null;
+}
+
+/** An empty string is treated the same as absent: a UI leaving a description field blank naturally posts ''. */
+function optionalBoundedString(value: unknown, path: string, maxLength: number): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  return boundedString(value, path, maxLength);
 }
 
 export const revisionSchema = schema<Revision>((value) => {
@@ -296,6 +304,8 @@ export const revisionSchema = schema<Revision>((value) => {
     protocolVersion: protocolVersionSchema.parse(input.protocolVersion),
     html: string(input.html, 'revision.html'),
     assetIds: arrayOfStrings(input.assetIds, 'revision.assetIds'),
+    title: boundedString(input.title, 'revision.title', 200),
+    description: optionalBoundedString(input.description, 'revision.description', 2000),
   };
 });
 
@@ -320,6 +330,61 @@ export const revisionPublicationSchema = schema<RevisionPublication>((value) => 
     throw invalid('revisionPublication.expectedCurrentRevisionId', 'must be a non-empty string, null, or absent');
   }
   return expected === undefined ? revision : { ...revision, expectedCurrentRevisionId: expected };
+});
+
+/**
+ * A revision as it appears in a channel's history list: everything about it
+ * except the HTML body, which `RevisionDetail` adds back for the inspect
+ * endpoint. Server-produced only, so (like `TokenSummary`) it has no runtime
+ * schema of its own.
+ */
+export interface RevisionSummary {
+  protocolVersion: ProtocolVersion;
+  id: string;
+  channel: string;
+  title: string;
+  description: string | null;
+  profileVersion: number;
+  assetIds: string[];
+  /** null for a revision published before content hashing was introduced. */
+  contentHash: string | null;
+  publishedBy: string | null;
+  publishedByLabel: string | null;
+  createdAt: number;
+  rolledBackFrom: string | null;
+  current: boolean;
+}
+
+export interface RevisionDetail extends RevisionSummary {
+  html: string;
+}
+
+/**
+ * Rollback always mints a fresh revision id for the resurrected content
+ * rather than reusing the old one, since revisions are immutable and
+ * `(channel, id)` is already taken. `expectedCurrentRevisionId` reuses the
+ * same optional compare-and-swap shape as `RevisionPublication`.
+ */
+export interface RollbackRequest {
+  protocolVersion: ProtocolVersion;
+  newRevisionId: string;
+  expectedCurrentRevisionId?: string | null;
+}
+
+export const rollbackRequestSchema = schema<RollbackRequest>((value) => {
+  const input = record(value, 'rollbackRequest');
+  const expected = input.expectedCurrentRevisionId;
+  if (expected !== undefined && expected !== null && typeof expected !== 'string') {
+    throw invalid('rollbackRequest.expectedCurrentRevisionId', 'must be a string, null, or absent');
+  }
+  if (expected === '') {
+    throw invalid('rollbackRequest.expectedCurrentRevisionId', 'must be a non-empty string, null, or absent');
+  }
+  const base = {
+    protocolVersion: protocolVersionSchema.parse(input.protocolVersion),
+    newRevisionId: string(input.newRevisionId, 'rollbackRequest.newRevisionId'),
+  };
+  return expected === undefined ? base : { ...base, expectedCurrentRevisionId: expected };
 });
 
 export interface RenderStatus {
