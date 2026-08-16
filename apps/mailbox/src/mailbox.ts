@@ -11,6 +11,9 @@ import {
   registerTargetRequestSchema,
   revisionPublicationSchema,
   rollbackRequestSchema,
+  isAssetContentType,
+  type Asset,
+  type AssetContentType,
   type Channel,
   type CreatedToken,
   type HeartbeatResponse,
@@ -209,6 +212,19 @@ async function routeV1(
     if (!canAccessChannel(principal, channelId, ['publisher', 'reader'])) return forbidden(res);
     return getRevisionDetailHandler(res, store, channelId, revisionId);
   }
+  const assetsMatch = pathname.match(/^\/v1\/channels\/([^/]+)\/assets$/);
+  if (assetsMatch && method === 'POST') {
+    const channelId = decodeURIComponent(assetsMatch[1] ?? '');
+    if (!canAccessChannel(principal, channelId, ['publisher'])) return forbidden(res);
+    return uploadAsset(req, res, store, channelId, maxBodyBytes);
+  }
+  const assetMatch = pathname.match(/^\/v1\/channels\/([^/]+)\/assets\/([^/]+)$/);
+  if (assetMatch && method === 'GET') {
+    const channelId = decodeURIComponent(assetMatch[1] ?? '');
+    const assetId = decodeURIComponent(assetMatch[2] ?? '');
+    if (!canAccessChannel(principal, channelId, ['publisher', 'reader', 'target'])) return forbidden(res);
+    return getAssetHandler(res, store, channelId, assetId);
+  }
   const eventsMatch = pathname.match(/^\/v1\/channels\/([^/]+)\/events$/);
   if (eventsMatch && method === 'GET') {
     const channelId = decodeURIComponent(eventsMatch[1] ?? '');
@@ -337,6 +353,15 @@ async function publishRevision(
       409,
       'profile_version_mismatch',
       `Revision profile version ${revision.profileVersion} does not match channel profile version ${profile.version}`
+    );
+  }
+  const missingAssetIds = store.findMissingAssetIds(channelId, revision.assetIds);
+  if (missingAssetIds.length > 0) {
+    return sendError(
+      res,
+      400,
+      'missing_asset_references',
+      `Revision references asset id(s) not uploaded to channel '${channelId}': ${missingAssetIds.join(', ')}`
     );
   }
   try {
@@ -499,7 +524,8 @@ class RevisionEvents {
   }
 }
 
-async function readJsonBody(req: IncomingMessage, maxBodyBytes: number): Promise<{ error: ReadError } | { error: null; value: unknown }> {
+/** Enforces maxBodyBytes against both the declared content-length and the actual stream, since a client can omit or lie about the former. */
+async function readBoundedBody(req: IncomingMessage, maxBodyBytes: number): Promise<{ error: ReadError } | { error: null; value: Buffer }> {
   const declared = req.headers['content-length'];
   if (declared !== undefined) {
     const declaredBytes = Number(declared);
@@ -516,7 +542,13 @@ async function readJsonBody(req: IncomingMessage, maxBodyBytes: number): Promise
     }
     chunks.push(chunk as Buffer);
   }
-  const text = Buffer.concat(chunks).toString('utf8');
+  return { error: null, value: Buffer.concat(chunks) };
+}
+
+async function readJsonBody(req: IncomingMessage, maxBodyBytes: number): Promise<{ error: ReadError } | { error: null; value: unknown }> {
+  const body = await readBoundedBody(req, maxBodyBytes);
+  if (body.error) return body;
+  const text = body.value.toString('utf8');
   if (text.length === 0) return { error: null, value: {} };
   try {
     return { error: null, value: JSON.parse(text) as unknown };
@@ -845,6 +877,73 @@ function getChannelProfileHandler(res: ServerResponse, store: Store, channelId: 
     return sendError(res, 404, 'no_profile', `Channel '${channelId}' has no target profile yet`);
   }
   return sendJson(res, 200, profile);
+}
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** Signature-only detection (not a full parse) -- matches the issue's "validate actual PNG/WebP signatures" requirement without needing an image-decoding dependency. */
+function detectAssetContentType(data: Buffer): AssetContentType | null {
+  if (data.length >= PNG_SIGNATURE.length && data.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+    return 'image/png';
+  }
+  if (data.length >= 12 && data.toString('latin1', 0, 4) === 'RIFF' && data.toString('latin1', 8, 12) === 'WEBP') {
+    return 'image/webp';
+  }
+  return null;
+}
+
+async function uploadAsset(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: Store,
+  channelId: string,
+  maxBodyBytes: number
+): Promise<void> {
+  if (!store.getChannel(channelId)) {
+    return sendError(res, 404, 'channel_not_found', `Channel '${channelId}' not found`);
+  }
+  const declaredContentType = req.headers['content-type'];
+  if (!isAssetContentType(declaredContentType)) {
+    return sendError(res, 400, 'unsupported_content_type', "The 'content-type' header must be 'image/png' or 'image/webp'");
+  }
+  const body = await readBoundedBody(req, maxBodyBytes);
+  if (body.error) {
+    return sendError(res, body.error.status, body.error.code, body.error.message);
+  }
+  const data = body.value;
+  const actualContentType = detectAssetContentType(data);
+  if (actualContentType === null) {
+    return sendError(res, 400, 'invalid_asset_signature', 'The uploaded bytes are not a recognizable PNG or WebP image');
+  }
+  if (actualContentType !== declaredContentType) {
+    return sendError(
+      res,
+      400,
+      'asset_content_type_mismatch',
+      `Declared content-type '${declaredContentType}' does not match the uploaded bytes (detected '${actualContentType}')`
+    );
+  }
+  const sha256 = createHash('sha256').update(data).digest('hex');
+  const outcome = store.createAssetForChannel(channelId, { id: sha256, contentType: actualContentType, byteLength: data.length, data });
+  const asset: Asset = { protocolVersion: PROTOCOL_VERSION, id: sha256, contentType: actualContentType, byteLength: data.length, sha256 };
+  return sendJson(res, outcome === 'granted' ? 201 : 200, asset);
+}
+
+function getAssetHandler(res: ServerResponse, store: Store, channelId: string, assetId: string): void {
+  if (!store.getChannel(channelId)) {
+    return sendError(res, 404, 'channel_not_found', `Channel '${channelId}' not found`);
+  }
+  const asset = store.getAssetForChannel(channelId, assetId);
+  if (!asset) {
+    return sendError(res, 404, 'asset_not_found', `Asset '${assetId}' not found`);
+  }
+  res.writeHead(200, {
+    'content-type': asset.contentType,
+    'content-length': asset.byteLength,
+    // Assets are attacker-supplied bytes served from the mailbox's own origin.
+    'x-content-type-options': 'nosniff',
+  });
+  res.end(Buffer.from(asset.data));
 }
 
 function serveAdminUi(res: ServerResponse): void {

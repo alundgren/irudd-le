@@ -86,6 +86,16 @@ function arrayOfStrings(value: unknown, path: string): string[] {
   return value.map((item, index) => string(item, `${path}[${index}]`));
 }
 
+function uniqueArrayOfStrings(value: unknown, path: string): string[] {
+  const parsed = arrayOfStrings(value, path);
+  const seen = new Set<string>();
+  for (const item of parsed) {
+    if (seen.has(item)) throw invalid(path, `must not contain duplicate id '${item}'`);
+    seen.add(item);
+  }
+  return parsed;
+}
+
 /**
  * Channel identifiers end up in URL paths, container volume paths, and overlay
  * enrollment codes, so they are restricted to a lowercase slug. A channel's
@@ -303,7 +313,7 @@ export const revisionSchema = schema<Revision>((value) => {
     profileVersion: integer(input.profileVersion, 'revision.profileVersion', 1),
     protocolVersion: protocolVersionSchema.parse(input.protocolVersion),
     html: string(input.html, 'revision.html'),
-    assetIds: arrayOfStrings(input.assetIds, 'revision.assetIds'),
+    assetIds: uniqueArrayOfStrings(input.assetIds, 'revision.assetIds'),
     title: boundedString(input.title, 'revision.title', 200),
     description: optionalBoundedString(input.description, 'revision.description', 2000),
   };
@@ -483,10 +493,27 @@ export const targetStatusSchema = schema<TargetStatus>((value) => {
   };
 });
 
+/** Icon-heavy static guides only need these two immutable, well-understood binary formats. */
+export type AssetContentType = 'image/png' | 'image/webp';
+
+export const ASSET_CONTENT_TYPES: readonly AssetContentType[] = ['image/png', 'image/webp'];
+
+/** The single place that knows which content-types cross the wire as an asset -- adapters (e.g. the mailbox's upload content-type header check) call this rather than repeating the list. */
+export function isAssetContentType(value: unknown): value is AssetContentType {
+  return typeof value === 'string' && (ASSET_CONTENT_TYPES as readonly string[]).includes(value);
+}
+
+export function assetContentType(value: unknown, path: string): AssetContentType {
+  if (!isAssetContentType(value)) {
+    throw invalid(path, `must be one of ${ASSET_CONTENT_TYPES.join(', ')}`);
+  }
+  return value;
+}
+
 export interface Asset {
   protocolVersion: ProtocolVersion;
   id: string;
-  contentType: string;
+  contentType: AssetContentType;
   byteLength: number;
   sha256: string;
 }
@@ -495,7 +522,7 @@ export const assetSchema = schema<Asset>((value) => {
   const input = record(value, 'asset');
   const sha256 = string(input.sha256, 'asset.sha256');
   if (!/^[a-f0-9]{64}$/i.test(sha256)) throw invalid('asset.sha256', 'must be a SHA-256 digest');
-  return { protocolVersion: protocolVersionSchema.parse(input.protocolVersion), id: string(input.id, 'asset.id'), contentType: string(input.contentType, 'asset.contentType'), byteLength: integer(input.byteLength, 'asset.byteLength', 0), sha256 };
+  return { protocolVersion: protocolVersionSchema.parse(input.protocolVersion), id: string(input.id, 'asset.id'), contentType: assetContentType(input.contentType, 'asset.contentType'), byteLength: integer(input.byteLength, 'asset.byteLength', 0), sha256 };
 });
 
 /**

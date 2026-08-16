@@ -266,6 +266,29 @@ test('validates a heartbeat response and accepts a null channel', () => {
   );
 });
 
+test('restricts an asset to PNG or WebP and validates its sha256 shape', () => {
+  const base = { protocolVersion: PROTOCOL_VERSION, id: 'a'.repeat(64), byteLength: 4, sha256: 'a'.repeat(64) };
+  assert.deepEqual(assetSchema.parse({ ...base, contentType: 'image/png' }), { ...base, contentType: 'image/png' });
+  assert.deepEqual(assetSchema.parse({ ...base, contentType: 'image/webp' }), { ...base, contentType: 'image/webp' });
+  assert.throws(
+    () => assetSchema.parse({ ...base, contentType: 'image/gif' }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.path === 'asset.contentType'
+  );
+  assert.throws(
+    () => assetSchema.parse({ ...base, contentType: 'image/png', sha256: 'not-hex' }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.path === 'asset.sha256'
+  );
+});
+
+test('rejects a revision manifest with duplicate asset ids', () => {
+  const base = { id: 'rev-001', channel: 'main', profileVersion: 1, protocolVersion: PROTOCOL_VERSION, html: '<p>hi</p>', title: 'Guide', description: null };
+  assert.deepEqual(revisionSchema.parse({ ...base, assetIds: ['asset-1', 'asset-2'] }).assetIds, ['asset-1', 'asset-2']);
+  assert.throws(
+    () => revisionSchema.parse({ ...base, assetIds: ['asset-1', 'asset-1'] }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.path === 'revision.assetIds'
+  );
+});
+
 test('validates a target profile at the protocol boundary', () => {
   assert.deepEqual(
     targetProfileSchema.parse({

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
 import { createMailbox, type MailboxOptions } from './index';
-import { TARGET_ONLINE_WINDOW_MS } from './mailbox';
+import { DEFAULT_MAX_BODY_BYTES, TARGET_ONLINE_WINDOW_MS } from './mailbox';
 
 const ADMIN_SECRET = 'test-admin';
 
@@ -1517,6 +1518,257 @@ test('serves health, readiness, and the admin UI without a credential', async ()
     assert.equal(admin.status, 200);
     assert.match(admin.headers.get('content-type') ?? '', /text\/html/);
     assert.match(await admin.text(), /Mailbox admin/);
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+function pngBytes(filler = 'png-body'): Buffer {
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from(filler)]);
+}
+
+function webpBytes(filler = 'webp-body'): Buffer {
+  return Buffer.concat([Buffer.from('RIFF', 'latin1'), Buffer.from([0, 0, 0, 0]), Buffer.from('WEBP', 'latin1'), Buffer.from(filler)]);
+}
+
+async function uploadAsset(base: string, token: string, channelId: string, contentType: string, data: Uint8Array): Promise<Response> {
+  return fetch(new URL(`/v1/channels/${channelId}/assets`, base), {
+    method: 'POST',
+    headers: { ...authHeader(token), 'content-type': contentType },
+    body: data,
+  });
+}
+
+/**
+ * Streams a body with node:http directly, without ever setting
+ * content-length, so this exercises the per-chunk cap in readBoundedBody
+ * rather than the declared-length precheck -- fetch() always computes and
+ * sends content-length for a Buffer/Uint8Array body, so it cannot reach this
+ * path.
+ */
+async function uploadAssetStreamed(
+  base: string,
+  token: string,
+  channelId: string,
+  contentType: string,
+  chunkCount: number,
+  chunkSize: number
+): Promise<{ status: number; code: string | undefined }> {
+  const url = new URL(`/v1/channels/${channelId}/assets`, base);
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      url,
+      { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': contentType, connection: 'close' } },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          const parsed = text.length > 0 ? (JSON.parse(text) as { code?: string }) : undefined;
+          resolve({ status: res.statusCode ?? 0, code: parsed?.code });
+        });
+      }
+    );
+    req.on('error', (err: NodeJS.ErrnoException) => {
+      // The server may answer 413 and tear the connection down before every
+      // queued chunk has been written; that races harmlessly with the still
+      // in-flight write()s, so ignore just the two codes that race produces.
+      if (err.code === 'ECONNRESET' || err.code === 'EPIPE') return;
+      reject(err);
+    });
+    const chunk = Buffer.alloc(chunkSize, 'x');
+    const writeNext = (remaining: number): void => {
+      if (remaining <= 0) {
+        req.end();
+        return;
+      }
+      req.write(chunk, () => writeNext(remaining - 1));
+    };
+    writeNext(chunkCount);
+  });
+}
+
+test('uploads a PNG asset, dedupes on reupload, and retrieves it by immutable id', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+    const reader = await mintToken(base, ADMIN_SECRET, 'reader', 'main', 'Overlay main');
+    const bytes = pngBytes();
+
+    const first = await uploadAsset(base, publisher.secret, 'main', 'image/png', bytes);
+    assert.equal(first.status, 201);
+    const firstBody = await jsonBody(first);
+    assert.equal(firstBody.contentType, 'image/png');
+    assert.equal(firstBody.byteLength, bytes.length);
+    assert.equal(firstBody.id, firstBody.sha256);
+    assert.match(firstBody.sha256, /^[a-f0-9]{64}$/);
+
+    const reupload = await uploadAsset(base, publisher.secret, 'main', 'image/png', bytes);
+    assert.equal(reupload.status, 200);
+    assert.deepEqual(await jsonBody(reupload), firstBody);
+
+    const fetched = await fetch(new URL(`/v1/channels/main/assets/${firstBody.id}`, base), { method: 'GET', headers: authHeader(reader.secret) });
+    assert.equal(fetched.status, 200);
+    assert.equal(fetched.headers.get('content-type'), 'image/png');
+    assert.deepEqual(new Uint8Array(await fetched.arrayBuffer()), new Uint8Array(bytes));
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('uploads a WebP asset by signature', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+
+    const res = await uploadAsset(base, publisher.secret, 'main', 'image/webp', webpBytes());
+    assert.equal(res.status, 201);
+    assert.equal((await jsonBody(res)).contentType, 'image/webp');
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('rejects asset uploads that are oversized, malformed, or mismatched between declared and actual type', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+
+    const oversized = await uploadAsset(base, publisher.secret, 'main', 'image/png', pngBytes('x'.repeat(DEFAULT_MAX_BODY_BYTES)));
+    assert.equal(oversized.status, 413);
+    assert.equal((await jsonBody(oversized)).code, 'body_too_large');
+
+    const malformed = await uploadAsset(base, publisher.secret, 'main', 'image/png', Buffer.from('not an image'));
+    assert.equal(malformed.status, 400);
+    assert.equal((await jsonBody(malformed)).code, 'invalid_asset_signature');
+
+    const mismatched = await uploadAsset(base, publisher.secret, 'main', 'image/png', webpBytes());
+    assert.equal(mismatched.status, 400);
+    assert.equal((await jsonBody(mismatched)).code, 'asset_content_type_mismatch');
+
+    const unsupported = await uploadAsset(base, publisher.secret, 'main', 'image/gif', pngBytes());
+    assert.equal(unsupported.status, 400);
+    assert.equal((await jsonBody(unsupported)).code, 'unsupported_content_type');
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('rejects an asset upload that exceeds the cap while streaming, even with no declared content-length', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+
+    const chunkSize = Math.ceil(DEFAULT_MAX_BODY_BYTES / 2);
+    const streamed = await uploadAssetStreamed(base, publisher.secret, 'main', 'image/png', 3, chunkSize);
+    assert.equal(streamed.status, 413);
+    assert.equal(streamed.code, 'body_too_large');
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('an asset uploaded to one channel is not retrievable through another channel, even with a valid credential', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET, publishableChannel('main', 'Main channel'));
+    await createChannel(base, ADMIN_SECRET, publishableChannel('other', 'Other channel'));
+    const publisherMain = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot main');
+    const readerOther = await mintToken(base, ADMIN_SECRET, 'reader', 'other', 'Overlay other');
+
+    const uploaded = await uploadAsset(base, publisherMain.secret, 'main', 'image/png', pngBytes());
+    assert.equal(uploaded.status, 201);
+    const { id } = await jsonBody(uploaded);
+
+    const crossChannel = await fetch(new URL(`/v1/channels/other/assets/${id}`, base), { method: 'GET', headers: authHeader(readerOther.secret) });
+    assert.equal(crossChannel.status, 404);
+    assert.equal((await jsonBody(crossChannel)).code, 'asset_not_found');
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('only a publisher (or admin) may upload an asset; publisher, reader, and target may all retrieve one', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+    const reader = await mintToken(base, ADMIN_SECRET, 'reader', 'main', 'Overlay main');
+
+    const asReader = await uploadAsset(base, reader.secret, 'main', 'image/png', pngBytes());
+    assert.equal(asReader.status, 403);
+
+    const asAdmin = await uploadAsset(base, ADMIN_SECRET, 'main', 'image/png', pngBytes());
+    assert.equal(asAdmin.status, 201);
+    const { id } = await jsonBody(asAdmin);
+
+    const asReaderGet = await fetch(new URL(`/v1/channels/main/assets/${id}`, base), { method: 'GET', headers: authHeader(reader.secret) });
+    assert.equal(asReaderGet.status, 200);
+  } finally {
+    await mailbox.stop();
+  }
+});
+
+test('rejects a revision publish that references a missing or duplicated asset id, without disturbing the current revision', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET);
+    const publisher = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Guide bot');
+    const reader = await mintToken(base, ADMIN_SECRET, 'reader', 'main', 'Overlay main');
+
+    const firstPublish = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision()),
+    });
+    assert.equal(firstPublish.status, 201);
+
+    const uploaded = await uploadAsset(base, publisher.secret, 'main', 'image/png', pngBytes());
+    const { id: assetId } = await jsonBody(uploaded);
+
+    const missingRef = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision({ id: 'rev-002', html: '<h1>second</h1>', assetIds: ['not-uploaded'] })),
+    });
+    assert.equal(missingRef.status, 400);
+    assert.equal((await jsonBody(missingRef)).code, 'missing_asset_references');
+
+    const duplicateRef = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision({ id: 'rev-003', html: '<h1>third</h1>', assetIds: [assetId, assetId] })),
+    });
+    assert.equal(duplicateRef.status, 400);
+    assert.equal((await jsonBody(duplicateRef)).code, 'invalid_protocol_value');
+
+    const current = await fetch(new URL('/v1/channels/main/revisions/current', base), { method: 'GET', headers: authHeader(reader.secret) });
+    assert.deepEqual(await jsonBody(current), publishableRevision());
+
+    const validRef = await fetch(new URL('/v1/channels/main/revisions/current', base), {
+      method: 'PUT',
+      headers: jsonHeaders(publisher.secret),
+      body: JSON.stringify(publishableRevision({ id: 'rev-004', html: '<h1>fourth</h1>', assetIds: [assetId] })),
+    });
+    assert.equal(validRef.status, 201);
   } finally {
     await mailbox.stop();
   }
