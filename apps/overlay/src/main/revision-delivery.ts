@@ -1,8 +1,8 @@
 import { ipcMain, type BrowserWindow } from 'electron';
 import { PROTOCOL_VERSION, type RenderStatus, type Revision, type TargetProfile } from '@irudd-le/protocol';
 import type { EnrollmentState } from './enrollment-store';
-import { loadCachedRevision, saveCachedRevision } from './revision-cache';
-import { fetchChannelProfile, fetchCurrentRevision, openRevisionEvents } from './revision-client';
+import { loadCachedRevision, saveCachedRevision, type CachedRevision } from './revision-cache';
+import { fetchChannelProfile, fetchCurrentRevision, fetchRevisionAssets, openRevisionEvents } from './revision-client';
 import { reportRenderStatus } from './enrollment-client';
 
 const ACTIVATION_BUDGET_MS = 5_000;
@@ -86,7 +86,7 @@ export class RevisionDelivery {
     const generation = ++this.generation;
 
     const cached = loadCachedRevision(this.userDataDir, context.cacheKey);
-    void this.connect(context, generation, this.controller.signal, cached?.channel === context.channel ? cached : null);
+    void this.connect(context, generation, this.controller.signal, cached?.revision.channel === context.channel ? cached : null);
   }
 
   /** A heartbeat observed a new profile, so restart delivery with its version. */
@@ -100,11 +100,11 @@ export class RevisionDelivery {
     context: DeliveryContext,
     generation: number,
     signal: AbortSignal,
-    cached: Revision | null
+    cached: CachedRevision | null
   ): Promise<void> {
     if (cached) {
       try {
-        await this.activate(cached, false, context, { version: cached.profileVersion, contentBox: { width: 1, height: 1 } } as TargetProfile, generation);
+        await this.activate(cached.revision, false, context, { version: cached.revision.profileVersion, contentBox: { width: 1, height: 1 } } as TargetProfile, generation, cached.assets);
       } catch (error: unknown) {
         this.report('cached revision rejected', error);
       }
@@ -196,9 +196,6 @@ export class RevisionDelivery {
     if (revision.profileVersion !== profile.version) {
       throw new Error(`Candidate '${revision.id}' targets profile ${revision.profileVersion}, not ${profile.version}`);
     }
-    // #33 owns immutable asset retrieval. Rejecting here preserves the last
-    // useful display until every required asset can be staged and hashed.
-    if (revision.assetIds.length > 0) throw new Error(`Candidate '${revision.id}' requires unavailable staged assets`);
   }
 
   private async activate(
@@ -206,7 +203,8 @@ export class RevisionDelivery {
     persist: boolean,
     context: DeliveryContext,
     profile: TargetProfile,
-    generation: number
+    generation: number,
+    cachedAssets?: CachedRevision['assets']
   ): Promise<void> {
     if (!this.isCurrent(generation)) throw new Error(`Candidate '${revision.id}' was superseded before staging`);
     const startedAt = Date.now();
@@ -214,7 +212,11 @@ export class RevisionDelivery {
     let stagedMetrics: RenderMetrics | undefined;
     this.activeAttempts.add(attemptId);
     try {
-      const staged = await this.awaitStage(attemptId, revision, startedAt + ACTIVATION_BUDGET_MS);
+      // Assets are fetched and verified in the authenticated main process,
+      // never by the published iframe. Any failure stays inside this attempt,
+      // leaving the current iframe untouched.
+      const assets = cachedAssets ?? await fetchRevisionAssets(context.mailboxUrl, context.channel, context.secret, revision.assetIds);
+      const staged = await this.awaitStage(attemptId, activationRevision(revision, assets), startedAt + ACTIVATION_BUDGET_MS);
       stagedMetrics = staged.metrics;
       if (!staged.staged) throw new Error(staged.error ?? `Candidate '${revision.id}' was rejected by the renderer`);
       if (!this.isCurrent(generation)) throw new Error(`Candidate '${revision.id}' was superseded before activation`);
@@ -230,7 +232,7 @@ export class RevisionDelivery {
       await this.recordObservation(context, revision.id, revision.id, revision.profileVersion, attemptId, startedAt, metrics, 'active', null);
       if (persist) {
         try {
-          saveCachedRevision(this.userDataDir, context.cacheKey, revision);
+          saveCachedRevision(this.userDataDir, context.cacheKey, revision, assets);
         } catch (error: unknown) {
           this.report('could not cache activated revision', error);
         }
@@ -254,7 +256,7 @@ export class RevisionDelivery {
     }
   }
 
-  private async awaitStage(attemptId: string, revision: Revision, deadlineAt: number): Promise<StageResult> {
+  private async awaitStage(attemptId: string, revision: RevisionActivation, deadlineAt: number): Promise<StageResult> {
     return this.awaitRendererResult('revision:stage-result', attemptId, revision.id, deadlineAt, isStageResult, () => {
       this.win.webContents.send('revision:stage', { attemptId, revision, deadlineAt });
     });
@@ -355,6 +357,20 @@ export class RevisionDelivery {
       this.report('could not report render observation', error);
     }
   }
+}
+
+interface RevisionActivation extends Revision {
+  assetSources: Array<{ id: string; dataUrl: string }>;
+}
+
+function activationRevision(revision: Revision, assets: CachedRevision['assets']): RevisionActivation {
+  if (assets.length !== revision.assetIds.length || assets.some((asset, index) => asset.id !== revision.assetIds[index])) {
+    throw new Error(`Candidate '${revision.id}' does not have every required staged asset`);
+  }
+  return {
+    ...revision,
+    assetSources: assets.map((asset) => ({ id: asset.id, dataUrl: `data:${asset.contentType};base64,${asset.data.toString('base64')}` })),
+  };
 }
 
 function isNoCurrentRevision(error: unknown): boolean {

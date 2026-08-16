@@ -65,6 +65,11 @@ assets. The content shell disables scripts, navigation, forms, and access to
 the preload bridge. Later work adds delivery/reconnect, render feedback,
 history, uploads, and credentials as separate vertical slices.
 
+Mailbox-managed PNG/WebP images use `<img src="asset:<immutable-sha256>">`.
+The overlay retrieves and verifies each declared asset in its authenticated main
+process, then substitutes a data URL only inside the opaque content sandbox.
+Published documents cannot use ordinary network image URLs.
+
 The old placeholder planner, tabs, and controller-first direction are
 superseded. The controller research remains at
 `docs/research/xbox-controller-overlay-feasibility.md` as historical context.

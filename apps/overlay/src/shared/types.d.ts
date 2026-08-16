@@ -60,6 +60,8 @@ interface RevisionActivation {
   profileVersion: number;
   html: string;
   assetIds: string[];
+  /** Verified main-process bytes, represented for the opaque iframe only. */
+  assetSources: Array<{ id: string; dataUrl: string }>;
 }
 
 interface RevisionActivationCommand {

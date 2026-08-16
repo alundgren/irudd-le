@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const renderer = await readFile(path.join(appRoot, 'src/renderer/index.html'), 'utf8');
 const app = await readFile(path.join(appRoot, 'src/renderer/app.ts'), 'utf8');
+const assetSandbox = await readFile(path.join(appRoot, 'src/renderer/asset-sandbox.ts'), 'utf8');
 
 test('ships a passive, sandboxed published-content frame', () => {
   assert.match(renderer, /<iframe\b[^>]*\bid=["']revision-content["']/);
@@ -41,4 +42,12 @@ test('stages a revision off-screen and commits only a valid staged attempt', () 
   assert.match(app, /window\.overlay\.revisions\.onCommit/);
   assert.match(app, /Date\.now\(\) > staged\.deadlineAt/);
   assert.match(app, /current\.replaceWith\(staged\.iframe\)/);
+});
+
+test('resolves immutable image references to pre-staged data URLs inside the network-denying sandbox', () => {
+  assert.match(assetSandbox, /function resolveAssetUrls\(/);
+  assert.match(assetSandbox, /asset:<immutable-sha256>/);
+  assert.match(assetSandbox, /Required staged asset/);
+  assert.match(app, /sandboxedDocument\(revision\.html, revision\.assetSources, measurementToken\)/);
+  assert.match(assetSandbox, /img-src data: blob:/);
 });
