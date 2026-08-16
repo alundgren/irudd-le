@@ -77,5 +77,19 @@ superseded. The controller research remains at
 ## Testing
 
 Tests are written at public seams in small red → green slices. The protocol
-package’s parsing API is the initial seam. See [CLAUDE.md](CLAUDE.md) for the
-required focused-test, typecheck, and full-suite cadence.
+package’s parsing API is the initial seam. Run one source test file at a time
+with `test:focused`; each command builds the selected package and its workspace
+dependencies before invoking only that test program:
+
+| Package / runner | Focused command |
+| --- | --- |
+| Protocol compiled TypeScript | `corepack pnpm --filter @irudd-le/protocol test:focused -- src/index.test.ts` |
+| Mailbox compiled TypeScript | `corepack pnpm --filter @irudd-le/mailbox test:focused -- src/mailbox.test.ts` |
+| Overlay compiled TypeScript | `corepack pnpm --filter @irudd-le/overlay test:focused -- src/main/revision-cache.test.ts` |
+| Overlay direct Node MJS | `corepack pnpm --filter @irudd-le/overlay test:focused -- test/measurement-bootstrap.test.mjs` |
+| Upload UI direct Node MJS | `corepack pnpm --filter @irudd-le/upload-ui test:focused -- test/upload-client.test.mjs` |
+| Upload UI Electron browser harness | `corepack pnpm --filter @irudd-le/upload-ui test:focused -- test/browser-harness.cjs` |
+
+Pass exactly one source test-file path after `--`; the command never adds a
+package’s suite glob. See [AGENTS.md](AGENTS.md) for the required focused-test,
+typecheck, and full-suite cadence.
