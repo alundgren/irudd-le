@@ -90,3 +90,33 @@ test('returns the server-confirmed revision only after an atomic publish succeed
     assetIds: [],
   });
 });
+
+test('uploads and retrieves a PNG through the authenticated mailbox asset API', async () => {
+  const requests = [];
+  const asset = {
+    protocolVersion: 1,
+    id: 'a'.repeat(64),
+    contentType: 'image/png',
+    byteLength: 3,
+    sha256: 'a'.repeat(64),
+  };
+  const client = new UploadClient('https://mailbox.example/', 'pub_secret', async (input, init) => {
+    requests.push([String(input), init]);
+    if (init?.method === 'POST') return response(201, asset);
+    return new Response(Uint8Array.from([1, 2, 3]), { status: 200, headers: { 'content-type': 'image/png' } });
+  });
+
+  const uploaded = await client.uploadAsset('main', new Blob([Uint8Array.from([1, 2, 3])], { type: 'image/png' }));
+  const downloaded = await client.fetchAsset('main', uploaded.id);
+
+  assert.deepEqual(uploaded, asset);
+  assert.equal(downloaded.type, 'image/png');
+  assert.deepEqual(new Uint8Array(await downloaded.arrayBuffer()), Uint8Array.from([1, 2, 3]));
+  assert.equal(requests[0][0], 'https://mailbox.example/v1/channels/main/assets');
+  assert.deepEqual(requests[0][1].headers, { authorization: 'Bearer pub_secret', 'content-type': 'image/png' });
+  assert.equal(requests[0][1].body.type, 'image/png');
+  assert.deepEqual(requests[1], [
+    `https://mailbox.example/v1/channels/main/assets/${asset.id}`,
+    { headers: { authorization: 'Bearer pub_secret' } },
+  ]);
+});
