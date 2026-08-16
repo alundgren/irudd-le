@@ -23,6 +23,19 @@ corepack pnpm --filter @irudd-le/protocol test
 corepack pnpm test
 ```
 
+For red → green work, run one source test file through its package’s
+`test:focused` script, for example:
+
+```bash
+corepack pnpm --filter @irudd-le/protocol test:focused -- src/index.test.ts
+```
+
+Every future test-bearing deliverable must provide the same `test:focused`
+file-first contract: accept exactly one source test-file path after `--`, run
+only that test program, and build its workspace dependencies and required
+output itself. Do not add placeholder tests or test scripts to testless
+deliverables.
+
 Every command above must pass from a clean checkout, before anything has been
 built. A package that depends on `@irudd-le/protocol` consumes its emitted
 `build/` types, so its own `build`, `typecheck`, and `test` scripts must build
