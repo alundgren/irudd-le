@@ -3,14 +3,20 @@
   "version": "0.1.0",
   "description": "Reserved boundary for the direct publication UI (#31)",
   "private": true,
+  "type": "module",
   "main": "./build/index.js",
   "types": "./build/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.json && node scripts/copy-static.mjs",
+    "typecheck": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.json --noEmit",
+    "test": "corepack pnpm build && node --test test/*.test.mjs && xvfb-run -a electron --no-sandbox test/browser-harness.cjs",
+    "test:browser": "corepack pnpm build && xvfb-run -a electron --no-sandbox test/browser-harness.cjs"
   },
   "dependencies": {
     "@irudd-le/protocol": "workspace:*"
   },
-  "devDependencies": { "typescript": "^5.9.3" }
+  "devDependencies": {
+    "electron": "^43.3.0",
+    "typescript": "^5.9.3"
+  }
 }

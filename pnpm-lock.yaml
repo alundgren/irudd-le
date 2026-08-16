@@ -49,6 +49,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/protocol
     devDependencies:
+      electron:
+        specifier: ^43.3.0
+        version: 43.3.0(supports-color@5.5.0)
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
