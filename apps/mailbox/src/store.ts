@@ -16,6 +16,9 @@ import { runMigrations } from './migrations';
 /** How many of a channel's most recent revisions retention keeps. */
 export const REVISION_RETENTION_LIMIT = 20;
 
+/** Grace period before a blob with no retained revision references is reclaimed. */
+const ASSET_RETENTION_PERIOD_MS = 7 * 24 * 60 * 60 * 1000;
+
 export interface TokenRecord {
   id: string;
   kind: TokenKind;
@@ -278,6 +281,72 @@ export class Store {
             )`
       )
       .run(channel, currentId, channel, keep);
+    this.sweepUnreferencedAssets();
+  }
+
+  /**
+   * Reclaims only blobs that have had no reference in any retained revision
+   * for the full grace period. Asset ids live in revision JSON manifests, so
+   * this deliberately checks the complete retained-revision set rather than
+   * just the channel whose retention sweep happened to run.
+   */
+  private sweepUnreferencedAssets(): void {
+    const now = Date.now();
+    const cutoff = now - ASSET_RETENTION_PERIOD_MS;
+
+    this.db
+      .prepare(
+        `UPDATE assets
+            SET unreferenced_at = NULL
+          WHERE unreferenced_at IS NOT NULL
+            AND EXISTS (
+              SELECT 1
+                FROM revisions r, json_each(r.asset_ids) asset_id
+               WHERE asset_id.value = assets.id
+            )`
+      )
+      .run();
+    this.db
+      .prepare(
+        `UPDATE assets
+            SET unreferenced_at = ?
+          WHERE unreferenced_at IS NULL
+            AND NOT EXISTS (
+              SELECT 1
+                FROM revisions r, json_each(r.asset_ids) asset_id
+               WHERE asset_id.value = assets.id
+            )`
+      )
+      .run(now);
+
+    // channel_assets intentionally has no delete cascade: deleting grants
+    // first makes the reclamation explicit and keeps the blob deletion valid.
+    this.db
+      .prepare(
+        `DELETE FROM channel_assets
+          WHERE asset_id IN (
+            SELECT id
+              FROM assets
+             WHERE unreferenced_at <= ?
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM revisions r, json_each(r.asset_ids) asset_id
+                  WHERE asset_id.value = assets.id
+               )
+          )`
+      )
+      .run(cutoff);
+    this.db
+      .prepare(
+        `DELETE FROM assets
+          WHERE unreferenced_at <= ?
+            AND NOT EXISTS (
+              SELECT 1
+                FROM revisions r, json_each(r.asset_ids) asset_id
+               WHERE asset_id.value = assets.id
+            )`
+      )
+      .run(cutoff);
   }
 
   createToken(token: NewToken): void {
@@ -579,6 +648,7 @@ export class Store {
     channel: string,
     asset: { id: string; contentType: AssetContentType; byteLength: number; data: Uint8Array }
   ): 'granted' | 'already_granted' {
+    const createdAt = Date.now();
     this.db.exec('BEGIN');
     try {
       // PNG and WebP signatures are mutually exclusive, so a dedup hit on id
@@ -586,9 +656,10 @@ export class Store {
       // id is deliberately the only identity key here, not (id, content_type).
       this.db
         .prepare(
-          'INSERT INTO assets (id, content_type, byte_length, data, createdAt) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING'
+          `INSERT INTO assets (id, content_type, byte_length, data, createdAt, unreferenced_at)
+           VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`
         )
-        .run(asset.id, asset.contentType, asset.byteLength, asset.data, Date.now());
+        .run(asset.id, asset.contentType, asset.byteLength, asset.data, createdAt, createdAt);
       const grant = this.db
         .prepare(
           'INSERT INTO channel_assets (channel, asset_id, createdAt) VALUES (?, ?, ?) ON CONFLICT(channel, asset_id) DO NOTHING'
