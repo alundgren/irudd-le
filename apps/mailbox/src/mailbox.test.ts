@@ -1539,6 +1539,14 @@ async function uploadAsset(base: string, token: string, channelId: string, conte
   });
 }
 
+async function publishCurrentRevision(base: string, token: string, revision: Record<string, unknown>): Promise<Response> {
+  return fetch(new URL(`/v1/channels/${revision.channel}/revisions/current`, base), {
+    method: 'PUT',
+    headers: jsonHeaders(token),
+    body: JSON.stringify(revision),
+  });
+}
+
 /**
  * Streams a body with node:http directly, without ever setting
  * content-length, so this exercises the per-chunk cap in readBoundedBody
@@ -1771,5 +1779,142 @@ test('rejects a revision publish that references a missing or duplicated asset i
     assert.equal(validRef.status, 201);
   } finally {
     await mailbox.stop();
+  }
+});
+
+test('reclaims an orphaned asset only after seven days while preserving retained, current, and shared assets', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'irudd-mailbox-assets-'));
+  const databasePath = path.join(dir, 'mailbox.sqlite');
+  let publisherMain: { secret: string };
+  let publisherOther: { secret: string };
+  let readerMain: { secret: string };
+  let readerOther: { secret: string };
+  let orphanAssetId: string;
+  let retainedAssetId: string;
+  let sharedAssetId: string;
+  let currentAssetId: string;
+
+  const first = createMailbox({ ...baseOptions(), databasePath });
+  await first.start();
+  try {
+    const base = first.url;
+    await createChannel(base, ADMIN_SECRET, publishableChannel('main', 'Main channel'));
+    await createChannel(base, ADMIN_SECRET, publishableChannel('other', 'Other channel'));
+    publisherMain = await mintToken(base, ADMIN_SECRET, 'publisher', 'main', 'Main publisher');
+    publisherOther = await mintToken(base, ADMIN_SECRET, 'publisher', 'other', 'Other publisher');
+    readerMain = await mintToken(base, ADMIN_SECRET, 'reader', 'main', 'Main reader');
+    readerOther = await mintToken(base, ADMIN_SECRET, 'reader', 'other', 'Other reader');
+
+    const orphanUpload = await uploadAsset(base, publisherMain.secret, 'main', 'image/png', pngBytes('orphan'));
+    const retainedUpload = await uploadAsset(base, publisherMain.secret, 'main', 'image/png', pngBytes('retained'));
+    const sharedUpload = await uploadAsset(base, publisherMain.secret, 'main', 'image/png', pngBytes('shared'));
+    const sharedGrant = await uploadAsset(base, publisherOther.secret, 'other', 'image/png', pngBytes('shared'));
+    const currentUpload = await uploadAsset(base, publisherMain.secret, 'main', 'image/png', pngBytes('current'));
+    assert.equal(orphanUpload.status, 201);
+    assert.equal(retainedUpload.status, 201);
+    assert.equal(sharedUpload.status, 201);
+    assert.equal(sharedGrant.status, 201);
+    assert.equal(currentUpload.status, 201);
+    orphanAssetId = (await jsonBody(orphanUpload)).id;
+    retainedAssetId = (await jsonBody(retainedUpload)).id;
+    sharedAssetId = (await jsonBody(sharedUpload)).id;
+    assert.equal((await jsonBody(sharedGrant)).id, sharedAssetId);
+    currentAssetId = (await jsonBody(currentUpload)).id;
+
+    for (let number = 1; number <= 21; number += 1) {
+      const assetIds = number === 1 ? [orphanAssetId] : number === 3 ? [sharedAssetId] : number === 5 ? [retainedAssetId] : [];
+      const published = await publishCurrentRevision(
+        base,
+        publisherMain.secret,
+        publishableRevision({ id: `main-${number}`, html: `<h1>${number}</h1>`, assetIds })
+      );
+      assert.equal(published.status, 201);
+    }
+    const otherPublished = await publishCurrentRevision(
+      base,
+      publisherOther.secret,
+      publishableRevision({ id: 'other-1', channel: 'other', html: '<h1>other</h1>', assetIds: [sharedAssetId] })
+    );
+    assert.equal(otherPublished.status, 201);
+  } finally {
+    await first.stop();
+  }
+
+  try {
+    // This is the persistence-focused clock control: retention records the
+    // orphan time after pruning its last revision; SQLite advances it past the
+    // grace period.
+    const db = new DatabaseSync(databasePath);
+    const elapsed = Date.now() - 7 * 24 * 60 * 60 * 1000 - 1;
+    for (const assetId of [orphanAssetId, retainedAssetId, sharedAssetId]) {
+      db.prepare('UPDATE assets SET unreferenced_at = ? WHERE id = ?').run(elapsed, assetId);
+    }
+    db.close();
+
+    const second = createMailbox({ ...baseOptions(), databasePath, adminBootstrapToken: undefined });
+    await second.start();
+    try {
+      const base = second.url;
+      for (let number = 22; number <= 24; number += 1) {
+        const assetIds = number === 24 ? [currentAssetId] : [];
+        const published = await publishCurrentRevision(
+          base,
+          publisherMain.secret,
+          publishableRevision({ id: `main-${number}`, html: `<h1>${number}</h1>`, assetIds })
+        );
+        assert.equal(published.status, 201);
+      }
+
+    } finally {
+      await second.stop();
+    }
+
+    // Age the current asset after it becomes current, then sweep a different
+    // channel so that this test proves the current reference itself protects
+    // an elapsed blob without replacing that current revision.
+    const currentDb = new DatabaseSync(databasePath);
+    currentDb.prepare('UPDATE assets SET unreferenced_at = ? WHERE id = ?').run(elapsed, currentAssetId);
+    currentDb.close();
+
+    const third = createMailbox({ ...baseOptions(), databasePath, adminBootstrapToken: undefined });
+    await third.start();
+    try {
+      const base = third.url;
+      const otherSweep = await publishCurrentRevision(
+        base,
+        publisherOther.secret,
+        publishableRevision({ id: 'other-2', channel: 'other', html: '<h1>other again</h1>', assetIds: [sharedAssetId] })
+      );
+      assert.equal(otherSweep.status, 201);
+
+      const orphan = await fetch(new URL(`/v1/channels/main/assets/${orphanAssetId}`, base), { headers: authHeader(readerMain.secret) });
+      const retained = await fetch(new URL(`/v1/channels/main/assets/${retainedAssetId}`, base), { headers: authHeader(readerMain.secret) });
+      const sharedMain = await fetch(new URL(`/v1/channels/main/assets/${sharedAssetId}`, base), { headers: authHeader(readerMain.secret) });
+      const sharedOther = await fetch(new URL(`/v1/channels/other/assets/${sharedAssetId}`, base), { headers: authHeader(readerOther.secret) });
+      const current = await fetch(new URL(`/v1/channels/main/assets/${currentAssetId}`, base), { headers: authHeader(readerMain.secret) });
+      assert.equal(orphan.status, 404);
+      assert.equal(retained.status, 200);
+      assert.equal(sharedMain.status, 200);
+      assert.equal(sharedOther.status, 200);
+      assert.equal(current.status, 200);
+    } finally {
+      await third.stop();
+    }
+
+    const retainedDb = new DatabaseSync(databasePath);
+    const storedIds = new Set(
+      (retainedDb
+        .prepare('SELECT id FROM assets WHERE id IN (?, ?, ?, ?)')
+        .all(orphanAssetId, retainedAssetId, sharedAssetId, currentAssetId) as { id: string }[]).map(
+        ({ id }) => id
+      )
+    );
+    retainedDb.close();
+    assert.equal(storedIds.has(orphanAssetId), false);
+    assert.equal(storedIds.has(retainedAssetId), true);
+    assert.equal(storedIds.has(sharedAssetId), true);
+    assert.equal(storedIds.has(currentAssetId), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -167,6 +167,15 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 7,
+    sql: `
+      -- NULL means the blob is still referenced by at least one retained
+      -- revision. A timestamp starts the grace period once the last such
+      -- reference has gone away.
+      ALTER TABLE assets ADD COLUMN unreferenced_at INTEGER NULL;
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseSync): void {
