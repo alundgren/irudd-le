@@ -29,14 +29,12 @@ via `MAILBOX_DATABASE_PATH` (and the `:memory:` form is used in tests). One
 volume mount is the whole durable state — there is no blob bucket or external
 store alongside it.
 
-The "local container can initialize and reopen the same database volume"
-criterion in #34 rests on a single SQLite file plus the mailbox's identical
-`Store`/migrations code path between the in-process reopen tests and the
-container. The committed test suite reopens the file in process
-(slice 4 and slice 8); the script `apps/mailbox/scripts/container-smoke.sh`
-exercises the same path against the built Docker image when Docker is
-available, and is intentionally kept out of `pnpm test` so the unit suite
-remains runnable without a Docker daemon.
+The initial deployment and recovery procedure is
+[`docs/mailbox-deployment.md`](../mailbox-deployment.md). Its Docker smoke
+check exercises initialize, readiness, clean shutdown, reopen, upgrade, and a
+pre-upgrade volume restore against the built image when Docker is available.
+It is intentionally kept out of `pnpm test` so the unit suite remains runnable
+without a Docker daemon.
 
 ## Content as BLOBs
 

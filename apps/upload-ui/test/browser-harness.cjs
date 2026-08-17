@@ -11,6 +11,7 @@ async function inspectPage(window) {
     const webp = Uint8Array.from(atob('UklGRiIAAABXRUJQVlA4IBYAAABwAQCdASoBAAEAAUAmJaQAA3AA/vuUAAA='), (byte) => byte.charCodeAt(0));
     let rejectPublication = false;
     let assetUploads = 0;
+    let assetUploadBodiesRead = 0;
     let assetFetches = 0;
     let publishedAssetIds = null;
     let publishedHtml = null;
@@ -23,7 +24,14 @@ async function inspectPage(window) {
         const id = String.fromCharCode(97 + assetUploads++).repeat(64);
         const contentType = init.headers['content-type'];
         assetContentTypes.set(id, contentType);
-        return new Response(JSON.stringify({ protocolVersion: 1, id, contentType, byteLength: contentType === 'image/webp' ? webp.length : png.length, sha256: id }), { status: 201, headers: { 'content-type': 'application/json' } });
+        return {
+          ok: true,
+          status: 201,
+          json: async () => {
+            assetUploadBodiesRead += 1;
+            return { protocolVersion: 1, id, contentType, byteLength: contentType === 'image/webp' ? webp.length : png.length, sha256: id };
+          },
+        };
       }
       if (String(url).includes('/assets/')) {
         assetFetches += 1;
@@ -41,17 +49,27 @@ async function inspectPage(window) {
         : new Response(init.body, { status: 201, headers: { 'content-type': 'application/json' } });
     };
     const set = (id, value) => { document.getElementById(id).value = value; };
+    const waitFor = async (description, predicate) => {
+      const deadline = Date.now() + 1000;
+      while (!predicate()) {
+        if (Date.now() >= deadline) throw new Error('Timed out waiting for ' + description);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    };
     set('mailbox-url', 'https://mailbox.example/');
     set('channel', 'main');
     set('secret', 'pub_secret');
     set('title', 'Browser build');
     set('html', '<a href="https://example.test">outside</a><script>throw new Error()</script><iframe srcdoc="<meta http-equiv=refresh content=0;url=https://attacker.test>"></iframe>');
     document.getElementById('load-target').click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitFor('the paired target preview', () => !document.getElementById('preview').hidden);
     const preview = document.getElementById('preview');
     const paired = { hidden: preview.hidden, transform: preview.style.transform, origin: preview.style.transformOrigin, srcdoc: preview.srcdoc, sandbox: preview.getAttribute('sandbox'), pointerEvents: preview.style.pointerEvents };
     const selectImage = async (name, data, type, attemptPublish = false, invalidateContext = false) => {
       const input = document.getElementById('image-file');
+      const expectedUploadCount = assetUploads + 1;
+      const expectedAssetUploadBody = assetUploadBodiesRead + 1;
+      const expectedAssetId = String.fromCharCode(96 + expectedUploadCount).repeat(64);
       Object.defineProperty(input, 'files', { configurable: true, value: [new File([data], name, { type })] });
       input.dispatchEvent(new Event('change'));
       const pendingPublishStatus = attemptPublish ? (() => {
@@ -62,7 +80,11 @@ async function inspectPage(window) {
         set('secret', 'new_secret');
         document.getElementById('secret').dispatchEvent(new Event('input'));
       }
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (invalidateContext) {
+        await waitFor('the stale image response to be discarded', () => assetUploadBodiesRead === expectedAssetUploadBody);
+      } else {
+        await waitFor('the uploaded image preview', () => preview.srcdoc.includes('data-uploaded-asset="' + expectedAssetId + '"'));
+      }
       return pendingPublishStatus;
     };
     const pendingPublishStatus = await selectImage('first.png', png, 'image/png', true);
@@ -70,11 +92,11 @@ async function inspectPage(window) {
     await selectImage('second.webp', webp, 'image/webp');
     const assetPreview = preview.srcdoc;
     document.getElementById('publish').click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitFor('the successful publication status', () => document.getElementById('status').textContent.includes('Published “Browser build” atomically.'));
     const published = document.getElementById('status').textContent;
     rejectPublication = true;
     document.getElementById('publish').click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitFor('the failed publication status', () => document.getElementById('status').textContent === 'A valid bearer token is required');
     const publishError = document.getElementById('status').textContent;
     window.dispatchEvent(new Event('beforeunload'));
     const sessionCleanedPreview = preview.srcdoc;
@@ -86,7 +108,7 @@ async function inspectPage(window) {
     document.getElementById('channel').dispatchEvent(new Event('input'));
     const invalidatedPreview = preview.srcdoc;
     document.getElementById('load-target').click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitFor('the unbound target request to complete', () => !document.getElementById('load-target').disabled);
     return { paired, pendingPublishStatus, firstAssetPreview, assetPreview, sessionCleanedPreview, contextAssetPreview, invalidatedPreview, assetFetches, publishedAssetIds, publishedHtml, published, publishError, unbound: document.getElementById('preview-status').textContent };
   })()`);
 }
