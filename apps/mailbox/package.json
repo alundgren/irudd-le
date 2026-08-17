@@ -10,6 +10,7 @@
     "typecheck": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.json --noEmit",
     "test": "corepack pnpm build && node --test build/*.test.js",
     "test:focused": "corepack pnpm build && node ../../scripts/run-focused-test.mjs",
+    "test:container": "bash scripts/container-smoke.sh",
     "start": "corepack pnpm build && node build/index.js"
   },
   "dependencies": {
