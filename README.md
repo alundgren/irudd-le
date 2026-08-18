@@ -89,6 +89,7 @@ dependencies before invoking only that test program:
 | Overlay direct Node MJS | `corepack pnpm --filter @irudd-le/overlay test:focused -- test/measurement-bootstrap.test.mjs` |
 | Upload UI direct Node MJS | `corepack pnpm --filter @irudd-le/upload-ui test:focused -- test/upload-client.test.mjs` |
 | Upload UI Electron browser harness | `corepack pnpm --filter @irudd-le/upload-ui test:focused -- test/browser-harness.cjs` |
+| CLI compiled TypeScript | `corepack pnpm --filter @irudd-le/cli test:focused -- src/client.test.ts` |
 
 Pass exactly one source test-file path after `--`; the command never adds a
 package’s suite glob. See [AGENTS.md](AGENTS.md) for the required focused-test,

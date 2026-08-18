@@ -66,7 +66,9 @@ folders are never modified in place.
   unauthenticated-page/authenticated-API admin UI at `/admin` (see ADR-0004)
   rather than a separate app.
 - `apps/upload-ui`: future universal direct-publish UI.
-- `packages/cli` and `packages/mcp`: future thin protocol clients/adapters.
+- `packages/cli`: thin protocol client for SSH-connected agents (inspect a
+  channel, publish self-contained HTML). `packages/mcp`: future thin protocol
+  adapter.
 
 The mailbox HTTP API is canonical. The upload UI, CLI, and stateless MCP
 adapter do not own business state. Static HTML/CSS is trusted for presentation

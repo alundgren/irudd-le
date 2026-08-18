@@ -62,6 +62,9 @@ importers:
         specifier: workspace:*
         version: link:../protocol
     devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
