@@ -7,9 +7,18 @@ production, a Tailnet, or a Raspberry Pi.
 
 ## Container contract
 
-Build `apps/mailbox/Dockerfile` from the repository root. The runtime image
-runs as the unprivileged `node` user and listens on TCP port `8080` by default.
-It exposes that port and probes unauthenticated `GET /healthz`. Both
+The repository-root [`Dockerfile`](../Dockerfile) is the canonical and only
+current mailbox deployment Dockerfile. Build it from a clean repository
+checkout, using the repository root as its context:
+
+```bash
+docker build --tag irudd-le/mailbox:local .
+```
+
+This root context is required because the image builds the shared protocol
+package as well as the mailbox. The runtime image runs as the unprivileged
+`node` user and listens on TCP port `8080` by default. It exposes that port and
+probes unauthenticated `GET /healthz`. Both
 `/healthz` and `/readyz` must return 200 before a reverse proxy admits normal
 traffic; they are intentionally available without a mailbox credential.
 
@@ -47,13 +56,14 @@ corepack pnpm --filter @irudd-le/mailbox test:container
 ```
 
 The check builds a baseline from the fixed pre-revision-history mailbox commit
-and the candidate from the current checkout, initializes a named volume,
-verifies both health and readiness, stops cleanly, reopens the same volume,
-starts the candidate against it, and restores a stopped pre-upgrade volume
-snapshot into the baseline image. Its containers and volumes are removed on
-exit. It is intentionally separate from the normal unit suite because it
-needs a Docker daemon. If that baseline commit is unavailable, set
-`BASE_IMAGE` to an available prior image instead.
+with that archived revision's Dockerfile, then builds the candidate from the
+current checkout using the canonical root Dockerfile above. It initializes a
+named volume, verifies both health and readiness, stops cleanly, reopens the
+same volume, starts the candidate against it, and restores a stopped
+pre-upgrade volume snapshot into the baseline image. Its containers and
+volumes are removed on exit. It is intentionally separate from the normal unit
+suite because it needs a Docker daemon. If that baseline commit is unavailable,
+set `BASE_IMAGE` to an available prior image instead.
 
 For a release rehearsal, point `BASE_IMAGE` to the currently deployed image
 and `IMAGE_TAG` to the candidate image. This exercises the candidate's
