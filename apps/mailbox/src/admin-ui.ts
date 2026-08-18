@@ -21,6 +21,7 @@ export const ADMIN_UI_HTML = `<!doctype html>
   table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; font-size: 0.85rem; }
   th, td { text-align: left; border-bottom: 1px solid #ddd; padding: 0.35rem 0.4rem; }
   .error { color: #b00020; white-space: pre-wrap; }
+  .success { color: #0a5d24; white-space: pre-wrap; }
   .secret { background: #fff8dc; border: 1px solid #e0c840; padding: 0.6rem; margin-top: 0.5rem; word-break: break-all; }
   .revoked { color: #999; }
 </style>
@@ -37,6 +38,7 @@ export const ADMIN_UI_HTML = `<!doctype html>
 <label for="channelName">Channel name</label>
 <input id="channelName" placeholder="Main channel" />
 <button id="createChannelBtn">Create channel</button>
+<div id="channelSuccess" class="success" role="status" aria-live="polite"></div>
 <div id="channelError" class="error"></div>
 
 <h2>Create token</h2>
@@ -98,9 +100,11 @@ async function api(path, options) {
 
 document.getElementById('createChannelBtn').addEventListener('click', async () => {
   const errorEl = document.getElementById('channelError');
+  const successEl = document.getElementById('channelSuccess');
   errorEl.textContent = '';
+  successEl.textContent = '';
   try {
-    await api('/v1/channels', {
+    const created = await api('/v1/channels', {
       method: 'POST',
       body: JSON.stringify({
         protocolVersion: 1,
@@ -108,6 +112,7 @@ document.getElementById('createChannelBtn').addEventListener('click', async () =
         name: document.getElementById('channelName').value.trim(),
       }),
     });
+    successEl.textContent = \`Created channel '\${created.id}' (\${created.name}).\`;
   } catch (e) {
     errorEl.textContent = String(e.message || e);
   }
