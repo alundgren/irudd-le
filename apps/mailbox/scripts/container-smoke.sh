@@ -8,9 +8,10 @@
 #   corepack pnpm --filter @irudd-le/mailbox test:container
 #
 # By default the baseline image is built from the fixed pre-revision-history
-# release commit, so the upgrade crosses persisted schema generations. For a
-# release rehearsal, provide the previously published image as BASE_IMAGE. The
-# upgrade image is built from this checkout.
+# release commit, so the upgrade crosses persisted schema generations. The
+# baseline uses that archived revision's Dockerfile; the candidate always uses
+# this checkout's canonical root Dockerfile. For a release rehearsal, provide
+# the previously published image as BASE_IMAGE.
 #
 #   BASE_IMAGE=ghcr.io/example/mailbox:previous \
 #   IMAGE_TAG=irudd-le/mailbox:candidate \
@@ -115,7 +116,7 @@ elif ! docker image inspect "${BASE_IMAGE}" >/dev/null 2>&1; then
 fi
 
 echo ">> building ${UPGRADE_IMAGE}"
-docker build -t "${UPGRADE_IMAGE}" -f apps/mailbox/Dockerfile .
+docker build -t "${UPGRADE_IMAGE}" .
 BUILT_IMAGE=true
 
 if [ "$(docker image inspect --format '{{.Id}}' "${BASE_IMAGE}")" = "$(docker image inspect --format '{{.Id}}' "${UPGRADE_IMAGE}")" ]; then
