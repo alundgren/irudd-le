@@ -1501,7 +1501,7 @@ test('rejects a malformed register-target request and an unpaired channel profil
   }
 });
 
-test('serves health, readiness, and the admin UI without a credential', async () => {
+test('serves health, readiness, and accessible channel creation feedback in the admin UI without a credential', async () => {
   const mailbox = createMailbox(baseOptions());
   await mailbox.start();
   const base = mailbox.url;
@@ -1517,7 +1517,10 @@ test('serves health, readiness, and the admin UI without a credential', async ()
     const admin = await fetch(new URL('/admin', base));
     assert.equal(admin.status, 200);
     assert.match(admin.headers.get('content-type') ?? '', /text\/html/);
-    assert.match(await admin.text(), /Mailbox admin/);
+    const adminHtml = await admin.text();
+    assert.match(adminHtml, /Mailbox admin/);
+    assert.match(adminHtml, /<div id="channelSuccess" class="success" role="status" aria-live="polite"><\/div>/);
+    assert.match(adminHtml, /Created channel '\$\{created\.id\}' \(\$\{created\.name\}\)\./);
   } finally {
     await mailbox.stop();
   }
