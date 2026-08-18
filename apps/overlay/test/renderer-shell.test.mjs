@@ -8,6 +8,7 @@ const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const renderer = await readFile(path.join(appRoot, 'src/renderer/index.html'), 'utf8');
 const app = await readFile(path.join(appRoot, 'src/renderer/app.ts'), 'utf8');
 const assetSandbox = await readFile(path.join(appRoot, 'src/renderer/asset-sandbox.ts'), 'utf8');
+const stageHost = await readFile(path.join(appRoot, 'test', 'renderer-shell-stage-host.html'), 'utf8');
 
 test('ships a passive, sandboxed published-content frame', () => {
   assert.match(renderer, /<iframe\b[^>]*\bid=["']revision-content["']/);
@@ -17,6 +18,16 @@ test('ships a passive, sandboxed published-content frame', () => {
   assert.match(renderer, /style-src 'unsafe-inline'/);
   assert.match(renderer, /img-src data: blob:/);
   assert.match(renderer, /form-action 'none'/);
+});
+
+test('permits only the shell capabilities a staged revision needs', () => {
+  assert.match(renderer, /img-src 'self' data:/);
+  assert.match(renderer, /script-src 'self' 'unsafe-inline'/);
+  assert.match(renderer, /style-src 'self' 'unsafe-inline'/);
+  assert.match(assetSandbox, /script-src 'nonce-\$\{measurementToken\}'/);
+  assert.match(stageHost, /img-src 'self' data:/);
+  assert.match(stageHost, /script-src 'self' 'unsafe-inline'/);
+  assert.match(stageHost, /style-src 'self' 'unsafe-inline'/);
 });
 
 test('keeps normal mode content-only while retaining local recovery controls', () => {
