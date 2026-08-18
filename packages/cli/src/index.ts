@@ -18,6 +18,7 @@ function createProcessIo(): CliIo {
     stderr: process.stderr,
     env: process.env,
     readFile: (path) => (path === '-' ? readStdin() : readFile(path, 'utf8')),
+    readBinaryFile: (path) => readFile(path),
     createClient: (mailboxUrl, secret) => new MailboxClient(mailboxUrl, secret),
   };
 }

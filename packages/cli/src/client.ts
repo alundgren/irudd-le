@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import {
   PROTOCOL_VERSION,
+  assetSchema,
   channelSchema,
   protocolErrorSchema,
   renderStatusObservationSchema,
   revisionSchema,
   targetProfileSchema,
+  type Asset,
+  type AssetContentType,
   type Channel,
   type RenderStatusObservation,
   type Revision,
@@ -34,11 +37,14 @@ export interface PublicationInput {
   html: string;
   /** Defaults to the channel's current paired target profile version, or 1 when unbound. */
   profileVersion?: number;
+  /** Immutable asset ids this revision refers to; duplicates are rejected by revisionSchema. */
+  assetIds?: readonly string[];
 }
 
 export interface MailboxClientLike {
   inspectChannel(channelId: string): Promise<ChannelInspection>;
   publish(input: PublicationInput): Promise<Revision>;
+  uploadAsset(channelId: string, contentType: AssetContentType, data: Uint8Array): Promise<Asset>;
 }
 
 type Fetcher = (input: URL, init?: RequestInit) => Promise<Response>;
@@ -76,7 +82,7 @@ export class MailboxClient implements MailboxClientLike {
       title: input.title,
       description: input.description ?? null,
       html: input.html,
-      assetIds: [],
+      assetIds: input.assetIds ?? [],
     });
     const response = await this.fetcher(this.url(`/v1/channels/${encodeURIComponent(revision.channel)}/revisions/current`), {
       method: 'PUT',
@@ -85,6 +91,18 @@ export class MailboxClient implements MailboxClientLike {
     });
     if (!response.ok) throw await apiError(response);
     return revisionSchema.parse(await response.json());
+  }
+
+  /** Uploads only PNG/WebP bytes; the mailbox returns their immutable identity. */
+  async uploadAsset(channelId: string, contentType: AssetContentType, data: Uint8Array): Promise<Asset> {
+    this.assertChannelId(channelId);
+    const response = await this.fetcher(this.url(`/v1/channels/${encodeURIComponent(channelId)}/assets`), {
+      method: 'POST',
+      headers: { ...this.authHeaders(), 'content-type': contentType },
+      body: data,
+    });
+    if (!response.ok) throw await apiError(response);
+    return assetSchema.parse(await response.json());
   }
 
   private async currentProfileVersion(channelId: string): Promise<number> {

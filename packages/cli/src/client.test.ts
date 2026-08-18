@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { ProtocolValidationError, type Asset } from '@irudd-le/protocol';
 import { MailboxApiError, MailboxClient } from './client';
 
 const CHANNEL = { protocolVersion: 1, id: 'main', name: 'Main channel' };
@@ -197,5 +198,65 @@ test('surfaces a publish conflict when the channel profile has moved on', async 
   await assert.rejects(
     client.publish({ channel: 'main', title: 'x', html: '<p>x</p>', profileVersion: 1 }),
     (error: unknown) => error instanceof MailboxApiError && error.status === 409 && error.code === 'profile_version_mismatch'
+  );
+});
+
+const ASSET: Asset = { protocolVersion: 1, id: 'a'.repeat(64), contentType: 'image/png', byteLength: 3, sha256: 'a'.repeat(64) };
+
+test('uploads a PNG asset and publishes a profiled revision that refers to it, end to end through the mailbox API', async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const client = new MailboxClient(
+    'https://mailbox.example/',
+    'pub_secret',
+    async (input, init) => {
+      const url = input.toString();
+      requests.push({ url, init });
+      if (url.endsWith('/assets') && init?.method === 'POST') return response(201, ASSET);
+      if (url.endsWith('/revisions/current')) return response(201, JSON.parse(init?.body as string));
+      throw new Error(`unexpected request: ${url}`);
+    },
+    () => 'rev-41'
+  );
+
+  const uploaded = await client.uploadAsset('main', 'image/png', Uint8Array.from([1, 2, 3]));
+  assert.deepEqual(uploaded, ASSET);
+  const uploadRequest = requests.find((r) => r.url.endsWith('/assets'));
+  assert.deepEqual(uploadRequest?.init?.headers, { authorization: 'Bearer pub_secret', 'content-type': 'image/png' });
+  assert.deepEqual(uploadRequest?.init?.body, Uint8Array.from([1, 2, 3]));
+
+  const revision = await client.publish({ channel: 'main', title: 'Icon guide', html: '<img src="asset:aaa">', profileVersion: 1, assetIds: [uploaded.id] });
+  assert.deepEqual(revision.assetIds, [uploaded.id]);
+});
+
+test('surfaces an invalid asset upload as a structured error', async () => {
+  const client = new MailboxClient('https://mailbox.example/', 'pub_secret', async () =>
+    response(400, errorBody('invalid_asset_signature', 'The uploaded bytes are not a recognizable PNG or WebP image'))
+  );
+
+  await assert.rejects(
+    client.uploadAsset('main', 'image/png', Uint8Array.from([1, 2, 3])),
+    (error: unknown) => error instanceof MailboxApiError && error.status === 400 && error.code === 'invalid_asset_signature'
+  );
+});
+
+test('rejects a duplicate asset id in a publication before it reaches the network', async () => {
+  const client = new MailboxClient('https://mailbox.example/', 'pub_secret', async (input) => {
+    throw new Error(`unexpected request: ${input.toString()}`);
+  });
+
+  await assert.rejects(
+    client.publish({ channel: 'main', title: 'x', html: '<p>x</p>', profileVersion: 1, assetIds: [ASSET.id, ASSET.id] }),
+    (error: unknown) => error instanceof ProtocolValidationError
+  );
+});
+
+test('surfaces a publication conflict as a structured error even when the revision carries asset ids', async () => {
+  const client = new MailboxClient('https://mailbox.example/', 'pub_secret', async () =>
+    response(409, errorBody('current_revision_conflict', "Channel 'main' no longer has the expected current revision"))
+  );
+
+  await assert.rejects(
+    client.publish({ channel: 'main', title: 'x', html: '<p>x</p>', profileVersion: 1, assetIds: [ASSET.id] }),
+    (error: unknown) => error instanceof MailboxApiError && error.status === 409 && error.code === 'current_revision_conflict'
   );
 });
