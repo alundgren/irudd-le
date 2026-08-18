@@ -1,4 +1,5 @@
 import { parseArgs } from 'node:util';
+import { assetContentType } from '@irudd-le/protocol';
 import type { ChannelInspection, MailboxClientLike } from './client';
 import { MailboxApiError } from './client';
 
@@ -14,6 +15,7 @@ export interface CliIo {
   /** Operator-provided credentials arrive only through `--secret` or this env, and are never written to stdout/stderr. */
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly readFile: (path: string) => Promise<string>;
+  readonly readBinaryFile: (path: string) => Promise<Uint8Array>;
   readonly createClient: (mailboxUrl: string, secret: string) => MailboxClientLike;
 }
 
@@ -22,7 +24,8 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
   try {
     if (command === 'status') return await runStatus(rest, io);
     if (command === 'publish') return await runPublish(rest, io);
-    throw new UsageError(`Unknown command '${command ?? ''}'. Expected 'status' or 'publish'.`);
+    if (command === 'upload-asset') return await runUploadAsset(rest, io);
+    throw new UsageError(`Unknown command '${command ?? ''}'. Expected 'status', 'publish', or 'upload-asset'.`);
   } catch (error) {
     if (error instanceof MailboxApiError) {
       io.stderr.write(`Error: ${error.code}: ${error.message}\n`);
@@ -71,6 +74,7 @@ async function runPublish(args: readonly string[], io: CliIo): Promise<number> {
       description: { type: 'string' },
       'html-file': { type: 'string' },
       'profile-version': { type: 'string' },
+      'asset-id': { type: 'string', multiple: true },
       secret: { type: 'string' },
     },
     allowPositionals: false,
@@ -84,9 +88,39 @@ async function runPublish(args: readonly string[], io: CliIo): Promise<number> {
   const profileVersion = values['profile-version'] === undefined ? undefined : parsePositiveInteger(values['profile-version'], '--profile-version');
   const html = await io.readFile(htmlFile);
   const client = io.createClient(mailboxUrl, secret);
-  const revision = await client.publish({ channel, title, description: values.description, html, profileVersion });
+  const revision = await client.publish({ channel, title, description: values.description, html, profileVersion, assetIds: values['asset-id'] });
   io.stdout.write(`Published revision '${revision.id}' to channel '${revision.channel}' (profile v${revision.profileVersion}).\n`);
   return 0;
+}
+
+async function runUploadAsset(args: readonly string[], io: CliIo): Promise<number> {
+  const { values } = parseArgs({
+    args: args as string[],
+    options: {
+      'mailbox-url': { type: 'string' },
+      channel: { type: 'string' },
+      file: { type: 'string' },
+      secret: { type: 'string' },
+    },
+    allowPositionals: false,
+    strict: true,
+  });
+  const mailboxUrl = requireValue(values['mailbox-url'], '--mailbox-url');
+  const channel = requireValue(values.channel, '--channel');
+  const file = requireValue(values.file, '--file');
+  const secret = resolveSecret(values.secret, io.env);
+  const contentType = assetContentType(contentTypeFromExtension(file), 'contentType');
+  const data = await io.readBinaryFile(file);
+  const client = io.createClient(mailboxUrl, secret);
+  const asset = await client.uploadAsset(channel, contentType, data);
+  io.stdout.write(`Uploaded asset '${asset.id}' (${asset.contentType}, ${asset.byteLength} bytes) to channel '${channel}'.\n`);
+  return 0;
+}
+
+/** A best-effort MIME guess from the file extension; @irudd-le/protocol's assetContentType is the single place that decides which content-types are actually supported. */
+function contentTypeFromExtension(path: string): string {
+  const match = /\.([a-z0-9]+)$/i.exec(path);
+  return match ? `image/${match[1]?.toLowerCase()}` : '';
 }
 
 function formatInspection(inspection: ChannelInspection): string {
