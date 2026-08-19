@@ -167,6 +167,30 @@ test('creates and reads a channel through the canonical API as admin', async () 
   }
 });
 
+test('lists all channels through the admin canonical API', async () => {
+  const mailbox = createMailbox(baseOptions());
+  await mailbox.start();
+  const base = mailbox.url;
+  try {
+    await createChannel(base, ADMIN_SECRET, publishableChannel('main', 'Main channel'));
+    await createChannel(base, ADMIN_SECRET, publishableChannel('secondary', 'Secondary channel'));
+
+    const listed = await fetch(new URL('/v1/channels', base), { method: 'GET', headers: authHeader(ADMIN_SECRET) });
+    assert.equal(listed.status, 200);
+    assert.deepEqual(await jsonBody(listed), {
+      protocolVersion: 1,
+      channels: [publishableChannel('main', 'Main channel'), publishableChannel('secondary', 'Secondary channel')],
+    });
+
+    const reader = await mintToken(base, ADMIN_SECRET, 'reader', 'main', 'Reader');
+    const forbidden = await fetch(new URL('/v1/channels', base), { method: 'GET', headers: authHeader(reader.secret) });
+    assert.equal(forbidden.status, 403);
+    assert.equal((await jsonBody(forbidden)).code, 'forbidden');
+  } finally {
+    await mailbox.stop();
+  }
+});
+
 test('rejects a channel id that is not a slug', async () => {
   const mailbox = createMailbox(baseOptions());
   await mailbox.start();

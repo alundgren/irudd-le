@@ -6,11 +6,20 @@
   "main": "./build/index.js",
   "types": "./build/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.json",
+    "typecheck": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.json --noEmit",
+    "test": "corepack pnpm build && node --test build/*.test.js",
+    "test:focused": "corepack pnpm build && node ../../scripts/run-focused-test.mjs",
+    "start": "corepack pnpm build && node build/index.js"
   },
   "dependencies": {
-    "@irudd-le/protocol": "workspace:*"
+    "@irudd-le/protocol": "workspace:*",
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.4.3"
   },
-  "devDependencies": { "typescript": "^5.9.3" }
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.9.3"
+  }
 }

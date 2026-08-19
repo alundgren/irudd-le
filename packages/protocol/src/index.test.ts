@@ -4,6 +4,7 @@ import {
   PROTOCOL_VERSION,
   ProtocolValidationError,
   assetSchema,
+  channelListSchema,
   channelSchema,
   createTokenRequestSchema,
   heartbeatRequestSchema,
@@ -159,6 +160,20 @@ test('accepts a channel name that is not a slug', () => {
   assert.deepEqual(
     channelSchema.parse({ protocolVersion: PROTOCOL_VERSION, id: 'main', name: 'Main channel' }),
     { protocolVersion: PROTOCOL_VERSION, id: 'main', name: 'Main channel' }
+  );
+});
+
+test('validates the protocol-backed channel list response', () => {
+  assert.deepEqual(channelListSchema.parse({
+    protocolVersion: PROTOCOL_VERSION,
+    channels: [{ protocolVersion: PROTOCOL_VERSION, id: 'main', name: 'Main channel' }],
+  }), {
+    protocolVersion: PROTOCOL_VERSION,
+    channels: [{ protocolVersion: PROTOCOL_VERSION, id: 'main', name: 'Main channel' }],
+  });
+  assert.throws(
+    () => channelListSchema.parse({ protocolVersion: PROTOCOL_VERSION, channels: [{ protocolVersion: PROTOCOL_VERSION, id: 'Not a slug', name: 'Main channel' }] }),
+    (error: unknown) => error instanceof ProtocolValidationError && error.path === 'channel.id'
   );
 });
 

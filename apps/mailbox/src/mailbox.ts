@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import {
   PROTOCOL_VERSION,
   channelSchema,
+  channelListSchema,
   createTokenRequestSchema,
   heartbeatRequestSchema,
   pairTargetRequestSchema,
@@ -165,6 +166,10 @@ async function routeV1(
   principal: Principal,
   revisionEvents: RevisionEvents
 ): Promise<void> {
+  if (pathname === '/v1/channels' && method === 'GET') {
+    if (principal.kind !== 'admin') return forbidden(res);
+    return listChannels(res, store);
+  }
   if (pathname === '/v1/channels' && method === 'POST') {
     if (principal.kind !== 'admin') return forbidden(res);
     return createChannel(req, res, store, maxBodyBytes);
@@ -288,6 +293,10 @@ async function routeV1(
     return pairTargetHandler(req, res, store, maxBodyBytes, decodeURIComponent(pairMatch[1] ?? ''));
   }
   return sendError(res, 404, 'not_found', 'Not found');
+}
+
+function listChannels(res: ServerResponse, store: Store): void {
+  return sendJson(res, 200, channelListSchema.parse({ protocolVersion: PROTOCOL_VERSION, channels: store.listChannels() }));
 }
 
 function forbidden(res: ServerResponse): void {

@@ -7,9 +7,11 @@ production, a Tailnet, or a Raspberry Pi.
 
 ## Container contract
 
-The repository-root [`Dockerfile`](../Dockerfile) is the canonical and only
-current mailbox deployment Dockerfile. Build it from a clean repository
-checkout, using the repository root as its context:
+The repository-root [`Dockerfile`](../Dockerfile) is the canonical mailbox
+deployment Dockerfile. It is distinct from the stateless private MCP image at
+[`packages/mcp/Dockerfile`](../packages/mcp/Dockerfile); neither image replaces
+the other. Build the mailbox image from a clean repository checkout, using the
+repository root as its context:
 
 ```bash
 docker build --tag irudd-le/mailbox:local .
