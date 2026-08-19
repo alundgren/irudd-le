@@ -70,6 +70,21 @@ The overlay retrieves and verifies each declared asset in its authenticated main
 process, then substitutes a data URL only inside the opaque content sandbox.
 Published documents cannot use ordinary network image URLs.
 
+## Publishing guidance
+
+`@irudd-le/protocol` exports `PUBLISHING_GUIDE`, the one canonical set of
+instructions for publishing to a channel. Both client surfaces render that
+same value rather than keeping prose of their own, so they cannot drift:
+
+```bash
+corepack pnpm --filter @irudd-le/cli build
+node packages/cli/build/index.js help
+```
+
+The browser UI shows the same guidance inline on its publishing page. See
+[ADR-0006](docs/adr/0006-canonical-publishing-guidance.md) for why it lives in
+the protocol package and how it is versioned.
+
 The old placeholder planner, tabs, and controller-first direction are
 superseded. The controller research remains at
 `docs/research/xbox-controller-overlay-feasibility.md` as historical context.
@@ -90,6 +105,7 @@ dependencies before invoking only that test program:
 | Upload UI direct Node MJS | `corepack pnpm --filter @irudd-le/upload-ui test:focused -- test/upload-client.test.mjs` |
 | Upload UI Electron browser harness | `corepack pnpm --filter @irudd-le/upload-ui test:focused -- test/browser-harness.cjs` |
 | CLI compiled TypeScript | `corepack pnpm --filter @irudd-le/cli test:focused -- src/client.test.ts` |
+| CLI guided-workflow fixture | `corepack pnpm --filter @irudd-le/cli test:focused -- src/guided-workflow.test.ts` |
 
 Pass exactly one source test-file path after `--`; the command never adds a
 package’s suite glob. See [AGENTS.md](AGENTS.md) for the required focused-test,

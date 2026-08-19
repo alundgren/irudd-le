@@ -1,5 +1,7 @@
 import {
   PROTOCOL_VERSION,
+  PUBLISHING_GUIDE,
+  PUBLISHING_GUIDE_CLI_BIN,
   assetContentType,
   assetSchema,
   channelSchema,
@@ -302,6 +304,10 @@ function escapeAttribute(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
 
+function escapeText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function imageDataUrl(image: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -331,9 +337,41 @@ function sanitizePreviewMarkup(html: string): string {
   return parsed.body.innerHTML;
 }
 
+/**
+ * The browser-facing copy of the canonical guidance. It is rendered from
+ * @irudd-le/protocol's PUBLISHING_GUIDE, the same value the CLI's help command
+ * prints, so the two copies cannot drift. Guide prose quotes markup such as
+ * <img src="asset:ID">, so every fragment is escaped into text rather than
+ * inserted as elements.
+ */
+export function publishingGuideMarkup(): string {
+  const guide = PUBLISHING_GUIDE;
+  const paragraphs = (body: readonly string[]): string => body.map((line) => `<p>${escapeText(line)}</p>`).join('');
+  const sections = guide.sections
+    .map((section) => `<section><h3>${escapeText(section.title)}</h3>${paragraphs(section.body)}</section>`)
+    .join('');
+  // The CLI form is shown here too: the guidance tells a browser-path author to
+  // confirm activation with the CLI, so the page has to show the command rather
+  // than send them back to the CLI's own help to find it.
+  const steps = guide.exampleWorkflow
+    .map((step) => `<li>${escapeText(step.purpose)}<br><em>${escapeText(step.browser)}</em><br><code>${escapeText(`${PUBLISHING_GUIDE_CLI_BIN} ${step.cli.join(' ')}`)}</code></li>`)
+    .join('');
+  const excludes = guide.excludes.map((line) => `<li>${escapeText(line)}</li>`).join('');
+  return `
+    <details id="guide">
+      <summary>${escapeText(guide.title)} (guide v${guide.guideVersion}, protocol v${guide.protocolVersion})</summary>
+      ${paragraphs(guide.summary)}
+      ${sections}
+      <ol>${steps}</ol>
+      <h3>Not covered here</h3>
+      <ul>${excludes}</ul>
+    </details>`;
+}
+
 const shell = `
   <form id="upload-form" novalidate>
     <h1>Publish HTML</h1>
+    ${publishingGuideMarkup()}
     <label>Mailbox URL <input id="mailbox-url" type="url" required placeholder="https://mailbox.example/"></label>
     <label>Channel <input id="channel" required pattern="[a-z0-9][a-z0-9-]{0,63}" placeholder="main"></label>
     <label>Publisher credential <input id="secret" type="password" required autocomplete="off"></label>

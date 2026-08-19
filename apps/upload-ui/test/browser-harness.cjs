@@ -109,7 +109,8 @@ async function inspectPage(window) {
     const invalidatedPreview = preview.srcdoc;
     document.getElementById('load-target').click();
     await waitFor('the unbound target request to complete', () => !document.getElementById('load-target').disabled);
-    return { paired, pendingPublishStatus, firstAssetPreview, assetPreview, sessionCleanedPreview, contextAssetPreview, invalidatedPreview, assetFetches, publishedAssetIds, publishedHtml, published, publishError, unbound: document.getElementById('preview-status').textContent };
+    const guide = document.getElementById('guide');
+    return { guideSectionTitles: guide ? Array.from(guide.querySelectorAll('h3')).map((h) => h.textContent) : null, guideText: guide ? guide.textContent : null, guideElementCount: guide ? guide.querySelectorAll('img, script, iframe').length : -1, paired, pendingPublishStatus, firstAssetPreview, assetPreview, sessionCleanedPreview, contextAssetPreview, invalidatedPreview, assetFetches, publishedAssetIds, publishedHtml, published, publishError, unbound: document.getElementById('preview-status').textContent };
   })()`);
 }
 
@@ -142,6 +143,11 @@ app.whenReady().then(async () => {
     assert.match(result.published, /Published “Browser build” atomically\./);
     assert.equal(result.publishError, 'A valid bearer token is required');
     assert.match(result.unbound, /pixel-accurate preview is unavailable/);
+    assert.ok(result.guideSectionTitles.includes('Universal fallback: the browser UI'), 'the mounted page is missing the canonical guidance');
+    assert.ok(result.guideSectionTitles.includes('Publishing images'), 'the mounted page is missing the asset guidance');
+    assert.match(result.guideText, /at most one image/);
+    assert.match(result.guideText, /<img src="asset:ID">/);
+    assert.equal(result.guideElementCount, 0, 'guide prose must render as text, never as live elements');
     console.log('upload-ui browser harness passed');
   } finally {
     window.destroy();

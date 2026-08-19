@@ -59,7 +59,8 @@ folders are never modified in place.
 
 ## Boundaries
 
-- `packages/protocol`: versioned runtime schemas and all shared protocol types.
+- `packages/protocol`: versioned runtime schemas, all shared protocol types, and
+  the canonical publishing guidance every client surface renders (see ADR-0006).
 - `apps/overlay`: Electron content shell, preload security boundary, packaging,
   launcher, setup/recovery shortcuts, and self-update.
 - `apps/mailbox`: the durable HTTP authority. It also serves its own narrow,

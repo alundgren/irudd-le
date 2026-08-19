@@ -1,5 +1,5 @@
 import { parseArgs } from 'node:util';
-import { assetContentType } from '@irudd-le/protocol';
+import { assetContentType, renderPublishingGuideText } from '@irudd-le/protocol';
 import type { ChannelInspection, MailboxClientLike } from './client';
 import { MailboxApiError } from './client';
 
@@ -25,7 +25,8 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
     if (command === 'status') return await runStatus(rest, io);
     if (command === 'publish') return await runPublish(rest, io);
     if (command === 'upload-asset') return await runUploadAsset(rest, io);
-    throw new UsageError(`Unknown command '${command ?? ''}'. Expected 'status', 'publish', or 'upload-asset'.`);
+    if (command === 'help' || command === '--help' || command === '-h') return runHelp(io);
+    throw new UsageError(`Unknown command '${command ?? ''}'. Expected 'status', 'publish', 'upload-asset', or 'help'.`);
   } catch (error) {
     if (error instanceof MailboxApiError) {
       io.stderr.write(`Error: ${error.code}: ${error.message}\n`);
@@ -42,6 +43,12 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
     io.stderr.write(`Error: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
+}
+
+/** The canonical guidance lives in @irudd-le/protocol; this command is one of its two renderings and adds nothing of its own. */
+function runHelp(io: CliIo): number {
+  io.stdout.write(renderPublishingGuideText());
+  return 0;
 }
 
 async function runStatus(args: readonly string[], io: CliIo): Promise<number> {
@@ -135,16 +142,26 @@ function formatInspection(inspection: ChannelInspection): string {
   );
   if (renderStatus === null) {
     lines.push('Render status: the paired target has not reported an observation yet.');
-  } else if (renderStatus.activation === 'active') {
-    lines.push(
-      `Render status: active, revision '${renderStatus.currentRevisionId}', observed ${new Date(renderStatus.observedAt).toISOString()}, target ${renderStatus.online ? 'online' : 'offline'}.`
-    );
-  } else {
-    lines.push(
-      `Render status: rejected (${renderStatus.failureReason}), observed ${new Date(renderStatus.observedAt).toISOString()}, target ${renderStatus.online ? 'online' : 'offline'}.`
-    );
+    return `${lines.join('\n')}\n`;
   }
+  const outcome = renderStatus.activation === 'active'
+    ? `active, revision '${renderStatus.currentRevisionId}'`
+    : `rejected (${renderStatus.failureReason})`;
+  lines.push(
+    `Render status: ${outcome}, observed ${new Date(renderStatus.observedAt).toISOString()}, target ${renderStatus.online ? 'online' : 'offline'}.`
+  );
+  // Overflow is independent of activation, so a revision can be active and
+  // still be silently cut off. Reporting it only on a rejection would hide
+  // the case an author is least able to notice.
+  lines.push(
+    `Rendered: ${renderStatus.rendered.width}x${renderStatus.rendered.height} (scroll ${renderStatus.rendered.scrollWidth}x${renderStatus.rendered.scrollHeight}), overflow ${describeOverflow(renderStatus.overflow)}.`
+  );
   return `${lines.join('\n')}\n`;
+}
+
+function describeOverflow(overflow: { horizontal: boolean; vertical: boolean }): string {
+  const axes = [overflow.horizontal ? 'horizontal' : null, overflow.vertical ? 'vertical' : null].filter((axis): axis is string => axis !== null);
+  return axes.length === 0 ? 'none' : axes.join(' and ');
 }
 
 function requireValue(value: string | undefined, flag: string): string {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { UploadClient } from '../build/index.js';
+import { UploadClient, publishingGuideMarkup } from '../build/index.js';
 
 const PROFILE = {
   protocolVersion: 1,
@@ -119,4 +119,36 @@ test('uploads and retrieves a PNG through the authenticated mailbox asset API', 
     `https://mailbox.example/v1/channels/main/assets/${asset.id}`,
     { headers: { authorization: 'Bearer pub_secret' } },
   ]);
+});
+
+test('the on-page guidance is rendered from the canonical guide, escaped', async () => {
+  const { PUBLISHING_GUIDE } = await import('@irudd-le/protocol');
+  const markup = publishingGuideMarkup();
+
+  for (const section of PUBLISHING_GUIDE.sections) {
+    assert.ok(markup.includes(section.title), `the page is missing guide section '${section.title}'`);
+    for (const paragraph of section.body) {
+      assert.ok(markup.includes(paragraph.replaceAll('<', '&lt;').replaceAll('>', '&gt;')), `the page is missing a paragraph of '${section.id}'`);
+    }
+  }
+  for (const step of PUBLISHING_GUIDE.exampleWorkflow) {
+    assert.ok(markup.includes(step.browser), `the page is missing the browser form of '${step.purpose}'`);
+    // The guidance sends a browser-path author to the CLI to read render
+    // status, so the command has to be on the page, not only in CLI help.
+    assert.ok(markup.includes(step.cli.join(' ')), `the page is missing the CLI form of '${step.purpose}'`);
+  }
+  for (const excluded of PUBLISHING_GUIDE.excludes) {
+    assert.ok(markup.includes(excluded), 'the page is missing a declared exclusion');
+  }
+  // The guide quotes markup like <img src="asset:ID">; it must reach the page
+  // as text, never as live elements inside the publishing form.
+  assert.ok(!markup.includes('<img src="asset:'), 'guide markup examples must be escaped, not rendered');
+});
+
+test('the on-page guidance names the browser path constraints an author hits here', async () => {
+  const markup = publishingGuideMarkup();
+
+  assert.match(markup, /at most one image/);
+  assert.match(markup, /does not report render status/);
+  assert.match(markup, /universal fallback/);
 });
