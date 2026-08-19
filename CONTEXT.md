@@ -66,10 +66,12 @@ folders are never modified in place.
 - `apps/mailbox`: the durable HTTP authority. It also serves its own narrow,
   unauthenticated-page/authenticated-API admin UI at `/admin` (see ADR-0004)
   rather than a separate app.
-- `apps/upload-ui`: future universal direct-publish UI.
+- `apps/upload-ui`: profile-aware browser publishing, including a PNG/WebP
+  image asset path. It is the supported browser publishing path and the
+  universal fallback when an agent has no shell access.
 - `packages/cli`: thin protocol client for SSH-connected agents (inspect a
-  channel, publish self-contained HTML). `packages/mcp`: future thin protocol
-  adapter.
+  channel, publish self-contained HTML, upload PNG/WebP assets, and print the
+  canonical publishing guidance). `packages/mcp`: future thin protocol adapter.
 
 The mailbox HTTP API is canonical. The upload UI, CLI, and stateless MCP
 adapter do not own business state. Static HTML/CSS is trusted for presentation

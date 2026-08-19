@@ -11,14 +11,14 @@ surfaces are thin clients of the same versioned HTTP contract.
 
 ## Workspace
 
-| Package | Responsibility | Planned work |
-| --- | --- | --- |
-| `@irudd-le/protocol` | Runtime-validated shared protocol | This issue |
-| `@irudd-le/overlay` | Electron shell, secure preload, packaging, launcher, self-update | #23, #21, #28 |
-| `@irudd-le/mailbox` | Durable HTTP/SQLite authority | #34 |
-| `@irudd-le/upload-ui` | Browser publishing fallback | #31 |
-| `@irudd-le/cli` | Local command-line client | #29 |
-| `@irudd-le/mcp` | Stateless remote MCP adapter | #35 |
+| Package | Responsibility |
+| --- | --- |
+| `@irudd-le/protocol` | Runtime-validated shared protocol |
+| `@irudd-le/overlay` | Electron shell, secure preload, packaging, launcher, self-update |
+| `@irudd-le/mailbox` | Durable HTTP/SQLite authority |
+| `@irudd-le/upload-ui` | Browser publishing fallback |
+| `@irudd-le/cli` | Local command-line client |
+| `@irudd-le/mcp` | Future stateless remote MCP adapter |
 
 Every deployable package has its own manifest and version. The protocol package
 is the one place that defines both the runtime schemas and inferred domain
@@ -62,8 +62,9 @@ preserve the previous revision on failure.
 
 Published documents are static HTML/CSS/SVG with data images or mailbox-managed
 assets. The content shell disables scripts, navigation, forms, and access to
-the preload bridge. Later work adds delivery/reconnect, render feedback,
-history, uploads, and credentials as separate vertical slices.
+the preload bridge. The overlay refreshes revisions after reconnecting and
+reports their render status. The mailbox records revision history, accepts
+PNG/WebP asset uploads, and protects channel operations with scoped credentials.
 
 Mailbox-managed PNG/WebP images use `<img src="asset:<immutable-sha256>">`.
 The overlay retrieves and verifies each declared asset in its authenticated main
