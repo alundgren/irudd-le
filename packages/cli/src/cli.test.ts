@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { run, type CliIo } from './cli';
 import { MailboxApiError, MailboxClient, type ChannelInspection, type MailboxClientLike, type PublicationInput } from './client';
-import type { Revision } from '@irudd-le/protocol';
+import { renderPublishingGuideText, type RenderStatusObservation, type Revision } from '@irudd-le/protocol';
 
 const CHANNEL = { protocolVersion: 1 as const, id: 'main', name: 'Main channel' };
 
@@ -367,4 +367,100 @@ test('publish reports a duplicate --asset-id as one structured, actionable error
   assert.equal(code, 1);
   assert.match(stderr.text, /duplicate id 'aaa'/);
   assert.equal(stderr.text.split('\n').filter((line) => line.length > 0).length, 1);
+});
+
+test('help prints the canonical guidance, unabridged', async () => {
+  const { io, stdout } = makeIo({});
+
+  const code = await run(['help'], io);
+
+  assert.equal(code, 0);
+  assert.equal(stdout.text, renderPublishingGuideText());
+});
+
+test('--help and -h reach the same guidance as the help command', async () => {
+  for (const flag of ['--help', '-h']) {
+    const { io, stdout } = makeIo({});
+
+    assert.equal(await run([flag], io), 0);
+    assert.equal(stdout.text, renderPublishingGuideText());
+  }
+});
+
+test('an unknown command points at the guidance instead of guessing', async () => {
+  const { io, stderr } = makeIo({});
+
+  const code = await run(['deploy'], io);
+
+  assert.equal(code, 1);
+  assert.match(stderr.text, /Unknown command 'deploy'/);
+  assert.match(stderr.text, /help/);
+});
+
+const PAIRED_PROFILE = {
+  protocolVersion: 1 as const,
+  version: 2,
+  contentBox: { width: 800, height: 600 },
+  devicePixelRatio: 1,
+  screenshot: { width: 800, height: 600 },
+  preferredIconSize: { min: 16, max: 32 },
+  minimumTextSize: 12,
+  background: { opaque: true },
+  features: [],
+};
+
+function observation(overrides: Partial<RenderStatusObservation>): RenderStatusObservation {
+  return {
+    protocolVersion: 1,
+    targetId: 'target-1',
+    attemptId: 'attempt-1',
+    attemptStartedAt: 0,
+    profileVersion: 2,
+    currentRevisionId: 'rev-1',
+    candidateRevisionId: 'rev-1',
+    rendered: { width: 800, height: 900, scrollWidth: 800, scrollHeight: 900 },
+    overflow: { horizontal: false, vertical: true },
+    activation: 'active',
+    failureReason: null,
+    observedAt: 0,
+    online: true,
+    ...overrides,
+  };
+}
+
+test('status reports overflow on an active revision, because activation does not imply it fits', async () => {
+  const inspection: ChannelInspection = { state: 'paired', channel: CHANNEL, profile: PAIRED_PROFILE, renderStatus: observation({}) };
+  const { io, stdout } = makeIo({ client: { inspectChannel: async () => inspection } });
+
+  assert.equal(await run(['status', '--mailbox-url', 'https://mailbox.example/', '--channel', 'main', '--secret', 'pub_x'], io), 0);
+  assert.match(stdout.text, /active/);
+  assert.match(stdout.text, /800x900/);
+  assert.match(stdout.text, /overflow.*vertical/i);
+});
+
+test('status reports the measured size of a revision that fits', async () => {
+  const renderStatus = observation({ rendered: { width: 800, height: 600, scrollWidth: 800, scrollHeight: 600 }, overflow: { horizontal: false, vertical: false } });
+  const inspection: ChannelInspection = { state: 'paired', channel: CHANNEL, profile: PAIRED_PROFILE, renderStatus };
+  const { io, stdout } = makeIo({ client: { inspectChannel: async () => inspection } });
+
+  assert.equal(await run(['status', '--mailbox-url', 'https://mailbox.example/', '--channel', 'main', '--secret', 'pub_x'], io), 0);
+  assert.match(stdout.text, /800x600/);
+  assert.match(stdout.text, /overflow.*none/i);
+});
+
+test('status reports the measured size and overflow of a rejected revision', async () => {
+  const renderStatus = observation({
+    activation: 'rejected',
+    failureReason: 'content overflows the locked content box',
+    currentRevisionId: 'rev-0',
+    candidateRevisionId: 'rev-1',
+    overflow: { horizontal: true, vertical: true },
+  });
+  const inspection: ChannelInspection = { state: 'paired', channel: CHANNEL, profile: PAIRED_PROFILE, renderStatus };
+  const { io, stdout } = makeIo({ client: { inspectChannel: async () => inspection } });
+
+  assert.equal(await run(['status', '--mailbox-url', 'https://mailbox.example/', '--channel', 'main', '--secret', 'pub_x'], io), 0);
+  assert.match(stdout.text, /rejected \(content overflows the locked content box\)/);
+  assert.match(stdout.text, /800x900/);
+  assert.match(stdout.text, /overflow.*horizontal and vertical/i);
 });

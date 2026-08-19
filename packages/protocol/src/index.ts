@@ -1,6 +1,15 @@
-/** The only protocol version this workspace currently understands. */
-export const PROTOCOL_VERSION = 1 as const;
-export type ProtocolVersion = typeof PROTOCOL_VERSION;
+export * from './contract.js';
+export * from './guidance.js';
+import {
+  ASSET_CONTENT_TYPES,
+  CHANNEL_ID_PATTERN,
+  PROTOCOL_VERSION,
+  REVISION_DESCRIPTION_MAX_LENGTH,
+  REVISION_TITLE_MAX_LENGTH,
+  isAssetContentType,
+  type AssetContentType,
+  type ProtocolVersion,
+} from './contract.js';
 
 export type ProtocolErrorCode =
   | 'invalid_protocol_value'
@@ -96,16 +105,9 @@ function uniqueArrayOfStrings(value: unknown, path: string): string[] {
   return parsed;
 }
 
-/**
- * Channel identifiers end up in URL paths, container volume paths, and overlay
- * enrollment codes, so they are restricted to a lowercase slug. A channel's
- * human-readable `name` stays free-form.
- */
-const CHANNEL_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
-
 function channelId(value: unknown, path: string): string {
   const parsed = string(value, path);
-  if (!CHANNEL_ID.test(parsed)) {
+  if (!CHANNEL_ID_PATTERN.test(parsed)) {
     throw invalid(path, 'must be a lowercase slug of 1-64 characters (a-z, 0-9, -) starting with a letter or digit');
   }
   return parsed;
@@ -314,8 +316,8 @@ export const revisionSchema = schema<Revision>((value) => {
     protocolVersion: protocolVersionSchema.parse(input.protocolVersion),
     html: string(input.html, 'revision.html'),
     assetIds: uniqueArrayOfStrings(input.assetIds, 'revision.assetIds'),
-    title: boundedString(input.title, 'revision.title', 200),
-    description: optionalBoundedString(input.description, 'revision.description', 2000),
+    title: boundedString(input.title, 'revision.title', REVISION_TITLE_MAX_LENGTH),
+    description: optionalBoundedString(input.description, 'revision.description', REVISION_DESCRIPTION_MAX_LENGTH),
   };
 });
 
@@ -492,16 +494,6 @@ export const targetStatusSchema = schema<TargetStatus>((value) => {
     republishRecommended: boolean(input.republishRecommended, 'targetStatus.republishRecommended'),
   };
 });
-
-/** Icon-heavy static guides only need these two immutable, well-understood binary formats. */
-export type AssetContentType = 'image/png' | 'image/webp';
-
-export const ASSET_CONTENT_TYPES: readonly AssetContentType[] = ['image/png', 'image/webp'];
-
-/** The single place that knows which content-types cross the wire as an asset -- adapters (e.g. the mailbox's upload content-type header check) call this rather than repeating the list. */
-export function isAssetContentType(value: unknown): value is AssetContentType {
-  return typeof value === 'string' && (ASSET_CONTENT_TYPES as readonly string[]).includes(value);
-}
 
 export function assetContentType(value: unknown, path: string): AssetContentType {
   if (!isAssetContentType(value)) {
