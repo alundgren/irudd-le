@@ -83,7 +83,7 @@ export class Store {
       .prepare('SELECT id, name, protocolVersion FROM channels WHERE id = ?')
       .get(id) as { id: string; name: string; protocolVersion: number } | undefined;
     if (!row) return undefined;
-    return { protocolVersion: PROTOCOL_VERSION, id: row.id, name: row.name };
+    return { protocolVersion: row.protocolVersion as Channel['protocolVersion'], id: row.id, name: row.name };
   }
 
   publishRevision(

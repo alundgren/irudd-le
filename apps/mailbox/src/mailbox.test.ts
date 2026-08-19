@@ -769,7 +769,7 @@ test('rejects rollback to a revision id that does not exist for the channel, and
   }
 });
 
-test("reports each revision's own recorded protocol version, not the server's current constant", async () => {
+test("reports each record's own recorded protocol version, not the server's current constant", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'mailbox-protocol-version-'));
   const databasePath = path.join(dir, 'mailbox.db');
   try {
@@ -789,11 +789,12 @@ test("reports each revision's own recorded protocol version, not the server's cu
       await first.stop();
     }
 
-    // Directly age a revision's recorded protocol version, simulating one
-    // published under a since-superseded version -- not reachable through the
-    // API today since there is only one supported protocolVersion.
+    // Directly age the recorded protocol versions, simulating a channel and a
+    // revision created under a since-superseded version -- not reachable through
+    // the API today since there is only one supported protocolVersion.
     const db = new DatabaseSync(databasePath);
     db.exec("UPDATE revisions SET protocolVersion = 0 WHERE channel = 'main' AND id = 'rev-001'");
+    db.exec("UPDATE channels SET protocolVersion = 0 WHERE id = 'main'");
     db.close();
 
     const second = createMailbox({ ...baseOptions(), databasePath, adminBootstrapToken: undefined });
@@ -807,6 +808,9 @@ test("reports each revision's own recorded protocol version, not the server's cu
 
       const current = await fetch(new URL('/v1/channels/main/revisions/current', second.url), { method: 'GET', headers: authHeader(readerSecret) });
       assert.equal((await jsonBody(current)).protocolVersion, 0);
+
+      const channel = await fetch(new URL('/v1/channels/main', second.url), { method: 'GET', headers: authHeader(readerSecret) });
+      assert.equal((await jsonBody(channel)).protocolVersion, 0);
     } finally {
       await second.stop();
     }
