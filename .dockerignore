@@ -22,3 +22,5 @@ packages/cli/src
 packages/cli/build
 packages/mcp/src
 packages/mcp/build
+!packages/mcp/src/
+!packages/mcp/src/**

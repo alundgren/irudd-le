@@ -86,6 +86,13 @@ export class Store {
     return { protocolVersion: row.protocolVersion as Channel['protocolVersion'], id: row.id, name: row.name };
   }
 
+  listChannels(): Channel[] {
+    const rows = this.db
+      .prepare('SELECT id, name, protocolVersion FROM channels ORDER BY createdAt ASC, id ASC')
+      .all() as Array<{ id: string; name: string; protocolVersion: number }>;
+    return rows.map((row) => ({ protocolVersion: row.protocolVersion as Channel['protocolVersion'], id: row.id, name: row.name }));
+  }
+
   publishRevision(
     channel: string,
     revision: Revision,

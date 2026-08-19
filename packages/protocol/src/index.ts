@@ -145,6 +145,21 @@ export const channelSchema = schema<Channel>((value) => {
   return { protocolVersion: protocolVersionSchema.parse(input.protocolVersion), id: channelId(input.id, 'channel.id'), name: string(input.name, 'channel.name') };
 });
 
+/** The canonical response from the mailbox's admin-only channel-list endpoint. */
+export interface ChannelList {
+  protocolVersion: ProtocolVersion;
+  channels: Channel[];
+}
+
+export const channelListSchema = schema<ChannelList>((value) => {
+  const input = record(value, 'channelList');
+  if (!Array.isArray(input.channels)) throw invalid('channelList.channels', 'must be an array');
+  return {
+    protocolVersion: protocolVersionSchema.parse(input.protocolVersion),
+    channels: input.channels.map((channel) => channelSchema.parse(channel)),
+  };
+});
+
 export interface TargetProfile {
   version: number;
   contentBox: { width: number; height: number };
@@ -290,6 +305,21 @@ export interface PendingTarget {
   lastSeenAt: number;
 }
 
+export const pendingTargetSchema = schema<PendingTarget>((value) => {
+  const input = record(value, 'pendingTarget');
+  return {
+    protocolVersion: protocolVersionSchema.parse(input.protocolVersion), id: string(input.id, 'pendingTarget.id'), clientName: string(input.clientName, 'pendingTarget.clientName'),
+    profile: targetProfileSchema.parse(input.profile), pairingCodeExpiresAt: input.pairingCodeExpiresAt === null ? null : integer(input.pairingCodeExpiresAt, 'pendingTarget.pairingCodeExpiresAt', 0),
+    createdAt: integer(input.createdAt, 'pendingTarget.createdAt', 0), lastSeenAt: integer(input.lastSeenAt, 'pendingTarget.lastSeenAt', 0),
+  };
+});
+
+export const pendingTargetListSchema = schema<{ targets: PendingTarget[] }>((value) => {
+  const input = record(value, 'pendingTargetList');
+  if (!Array.isArray(input.targets)) throw invalid('pendingTargetList.targets', 'must be an array');
+  return { targets: input.targets.map((target) => pendingTargetSchema.parse(target)) };
+});
+
 export interface Revision {
   id: string;
   channel: string;
@@ -370,6 +400,35 @@ export interface RevisionSummary {
 export interface RevisionDetail extends RevisionSummary {
   html: string;
 }
+
+export const revisionSummarySchema = schema<RevisionSummary>((value) => {
+  const input = record(value, 'revisionSummary');
+  const contentHash = input.contentHash;
+  if (contentHash !== null && (typeof contentHash !== 'string' || !/^[a-f0-9]{64}$/i.test(contentHash))) throw invalid('revisionSummary.contentHash', 'must be a SHA-256 digest or null');
+  const publishedBy = input.publishedBy;
+  const publishedByLabel = input.publishedByLabel;
+  if (publishedBy !== null && typeof publishedBy !== 'string') throw invalid('revisionSummary.publishedBy', 'must be a string or null');
+  if (publishedByLabel !== null && typeof publishedByLabel !== 'string') throw invalid('revisionSummary.publishedByLabel', 'must be a string or null');
+  if (input.rolledBackFrom !== null && typeof input.rolledBackFrom !== 'string') throw invalid('revisionSummary.rolledBackFrom', 'must be a string or null');
+  return {
+    protocolVersion: protocolVersionSchema.parse(input.protocolVersion), id: string(input.id, 'revisionSummary.id'), channel: channelId(input.channel, 'revisionSummary.channel'),
+    title: boundedString(input.title, 'revisionSummary.title', REVISION_TITLE_MAX_LENGTH), description: optionalBoundedString(input.description, 'revisionSummary.description', REVISION_DESCRIPTION_MAX_LENGTH),
+    profileVersion: integer(input.profileVersion, 'revisionSummary.profileVersion', 1), assetIds: uniqueArrayOfStrings(input.assetIds, 'revisionSummary.assetIds'),
+    contentHash, publishedBy, publishedByLabel, createdAt: integer(input.createdAt, 'revisionSummary.createdAt', 0), rolledBackFrom: input.rolledBackFrom as string | null,
+    current: boolean(input.current, 'revisionSummary.current'),
+  };
+});
+
+export const revisionDetailSchema = schema<RevisionDetail>((value) => {
+  const input = record(value, 'revisionDetail');
+  return { ...revisionSummarySchema.parse(input), html: string(input.html, 'revisionDetail.html') };
+});
+
+export const revisionListSchema = schema<{ protocolVersion: ProtocolVersion; revisions: RevisionSummary[] }>((value) => {
+  const input = record(value, 'revisionList');
+  if (!Array.isArray(input.revisions)) throw invalid('revisionList.revisions', 'must be an array');
+  return { protocolVersion: protocolVersionSchema.parse(input.protocolVersion), revisions: input.revisions.map((revision) => revisionSummarySchema.parse(revision)) };
+});
 
 /**
  * Rollback always mints a fresh revision id for the resurrected content
@@ -567,9 +626,33 @@ export interface TokenSummary {
   revokedAt: number | null;
 }
 
+export const tokenSummarySchema = schema<TokenSummary>((value) => {
+  const input = record(value, 'tokenSummary');
+  const kind = tokenKind(input.kind, 'tokenSummary.kind');
+  const hasChannel = input.channel !== undefined && input.channel !== null;
+  if (kind === 'admin' && hasChannel) throw invalid('tokenSummary.channel', 'must be null for an admin token');
+  if (kind !== 'admin' && !hasChannel) throw invalid('tokenSummary.channel', `is required for a ${kind} token`);
+  if (input.revokedAt !== null && typeof input.revokedAt !== 'number') throw invalid('tokenSummary.revokedAt', 'must be a number or null');
+  return {
+    protocolVersion: protocolVersionSchema.parse(input.protocolVersion), id: string(input.id, 'tokenSummary.id'), kind, channel: hasChannel ? channelId(input.channel, 'tokenSummary.channel') : null,
+    label: boundedString(input.label, 'tokenSummary.label', 100), createdAt: integer(input.createdAt, 'tokenSummary.createdAt', 0), revokedAt: input.revokedAt === null ? null : integer(input.revokedAt, 'tokenSummary.revokedAt', 0),
+  };
+});
+
+export const tokenListSchema = schema<{ tokens: TokenSummary[] }>((value) => {
+  const input = record(value, 'tokenList');
+  if (!Array.isArray(input.tokens)) throw invalid('tokenList.tokens', 'must be an array');
+  return { tokens: input.tokens.map((token) => tokenSummarySchema.parse(token)) };
+});
+
 export interface CreatedToken extends TokenSummary {
   secret: string;
 }
+
+export const createdTokenSchema = schema<CreatedToken>((value) => {
+  const input = record(value, 'createdToken');
+  return { ...tokenSummarySchema.parse(input), secret: string(input.secret, 'createdToken.secret') };
+});
 
 export interface ProtocolError {
   protocolVersion: ProtocolVersion;
