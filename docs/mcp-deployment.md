@@ -16,19 +16,19 @@ docker build -f packages/mcp/Dockerfile --tag irudd-le/mailbox-mcp:local .
 
 | Setting | Default | Operator contract |
 | --- | --- | --- |
-| `MCP_MAILBOX_URL` | none | Required private URL of the canonical mailbox API, supplied directly in the Piploy Application configuration. |
+| `MCP_MAILBOX_URL` | none | Required mailbox API URL, supplied directly in the Piploy Application configuration. It is not a secret. |
 | `MCP_MAILBOX_ADMIN_TOKEN` | none | Required dedicated mailbox `admin` credential, supplied through a Piploy `${hostEnv:...}` reference. It is sent only as the mailbox Bearer credential. |
 | `MCP_LISTEN_HOST` | `0.0.0.0` | Bind address inside the container. |
 | `MCP_LISTEN_PORT` | `8081` | Container port. Keep the container mapping consistent with it. |
 
 The image listens on its container interface so the host can publish its port.
 The later host deployment maps that port to a non-overlapping host port, which
-existing personal Tailnet devices reach directly at
-`http://<MagicDNS-name>:<host-port>/mcp`. Do not use Tailscale Serve, Funnel,
-Cloudflare, Cloudflare Tunnel, public DNS, or public port forwarding for this
-endpoint. The host operator must keep the mapped port off public and untrusted
-networks. Port mapping, deployment-secret creation, and production verification
-are owned by #80, not this image contract.
+existing personal Tailnet devices reach directly through the `/mcp` path. Do
+not use Tailscale Serve, Funnel, Cloudflare, Cloudflare Tunnel, public DNS, or
+public port forwarding for this endpoint. The host operator must keep the mapped
+port off public and untrusted networks. Port mapping, credential setup, and
+production verification belong to the deployment operation, not this image
+contract.
 
 `GET /healthz` and `GET /readyz` are intentionally non-sensitive. Native MCP
 clients may call `/mcp` without an `Origin` header; every request carrying one
