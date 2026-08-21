@@ -14,7 +14,7 @@ the other. Build the mailbox image from a clean repository checkout, using the
 repository root as its context:
 
 ```bash
-docker build --tag irudd-le/mailbox:local .
+docker build --quiet --tag irudd-le/mailbox:local .
 ```
 
 This root context is required because the image builds the shared protocol

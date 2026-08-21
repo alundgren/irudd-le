@@ -7,10 +7,10 @@
   "types": "./build/index.d.ts",
   "bin": { "irudd-le-mailbox": "./build/index.js" },
   "scripts": {
-    "build": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.json",
-    "typecheck": "corepack pnpm --filter @irudd-le/protocol build && tsc -p tsconfig.json --noEmit",
-    "test": "corepack pnpm build && node --test build/*.test.js",
-    "test:focused": "corepack pnpm build && node ../../scripts/run-focused-test.mjs"
+    "build": "corepack pnpm --reporter=append-only --filter @irudd-le/protocol build && tsc -p tsconfig.json",
+    "typecheck": "corepack pnpm --reporter=append-only --filter @irudd-le/protocol build && tsc -p tsconfig.json --noEmit",
+    "test": "corepack pnpm --reporter=append-only build && node --test --test-reporter=dot build/*.test.js",
+    "test:focused": "corepack pnpm --reporter=append-only build && node ../../scripts/run-focused-test.mjs"
   },
   "dependencies": {
     "@irudd-le/protocol": "workspace:*"

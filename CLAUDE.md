@@ -23,6 +23,11 @@ corepack pnpm --filter @irudd-le/protocol test
 corepack pnpm test
 ```
 
+For routine source reads and successful command output, use a soft 200-line
+default. Exceed it when failure diagnosis, inspection of a relevant boundary,
+or unresolved uncertainty needs more evidence. Start with narrow searches and
+reads, then use quiet modes where tools support them.
+
 For red → green work, run one source test file through its package’s
 `test:focused` script, for example:
 
