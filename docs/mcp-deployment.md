@@ -1,9 +1,8 @@
 # Private mailbox MCP deployment contract
 
 The MCP service is a separate, stateless adapter beside the mailbox. It has no
-database, OAuth discovery, callback, client registration, client-held secret,
-Cloudflare route, or public endpoint. The mailbox HTTP API remains the
-authority for every channel, revision, asset, target, and credential action.
+database, Cloudflare route, or public endpoint. The mailbox HTTP API remains
+the authority for every channel, revision, asset, target, and credential action.
 
 ## Build and configuration
 

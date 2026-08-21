@@ -95,5 +95,3 @@ surface, not a new package under `apps/`.
   attributable (see "Revocation is a soft delete" above).
 - **The rollback endpoint itself**: #32 grants admin the *authority* structure
   for it, but the endpoint is #26's.
-- **OAuth for the remote MCP surface**: out of scope per the epic (#20); this
-  ADR only covers the mailbox-native credential model.
