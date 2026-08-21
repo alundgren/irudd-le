@@ -16,8 +16,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.esm.json && node scripts/rename-esm.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "corepack pnpm build && node --test build/*.test.js",
-    "test:focused": "corepack pnpm build && node ../../scripts/run-focused-test.mjs"
+    "test": "corepack pnpm --reporter=append-only build && node --test --test-reporter=dot build/*.test.js",
+    "test:focused": "corepack pnpm --reporter=append-only build && node ../../scripts/run-focused-test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

@@ -10,7 +10,7 @@ Build from the repository root; the root build context is required for the
 shared protocol workspace:
 
 ```bash
-docker build -f packages/mcp/Dockerfile --tag irudd-le/mailbox-mcp:local .
+docker build --quiet -f packages/mcp/Dockerfile --tag irudd-le/mailbox-mcp:local .
 ```
 
 | Setting | Default | Operator contract |

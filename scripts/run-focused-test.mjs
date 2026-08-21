@@ -32,10 +32,10 @@ if (relativeSourcePath.endsWith('.ts')) {
     relativeSourcePath.slice(`src${path.sep}`.length).replace(/\.ts$/, '.js')
   );
   command = process.execPath;
-  argumentsForRunner = ['--test', emittedTest];
+  argumentsForRunner = ['--test', '--test-reporter=dot', emittedTest];
 } else if (relativeSourcePath.endsWith('.mjs')) {
   command = process.execPath;
-  argumentsForRunner = ['--test', sourcePath];
+  argumentsForRunner = ['--test', '--test-reporter=dot', sourcePath];
 } else if (relativeSourcePath.endsWith('.cjs')) {
   command = 'xvfb-run';
   argumentsForRunner = ['-a', 'electron', '--no-sandbox', sourcePath];

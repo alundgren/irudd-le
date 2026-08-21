@@ -30,6 +30,7 @@ HOST_PORT_UPGRADE="${HOST_PORT_UPGRADE:-18093}"
 HOST_PORT_ROLLBACK="${HOST_PORT_ROLLBACK:-18094}"
 CONTAINER_PORT="${CONTAINER_PORT:-8080}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-smoke-admin-secret}"
+VOLUME_COPY_IMAGE="node:24-slim"
 # c5ce423 introduced scoped credentials but predates revision-history and
 # current-revision migrations. Keep this pinned until the oldest supported
 # upgrade baseline intentionally changes.
@@ -83,10 +84,10 @@ stop_cleanly() { # <container-name>
 }
 
 copy_volume() { # <source-volume> <target-volume>
-  docker run --rm \
+  docker run --pull=never --rm \
     -v "${1}:/source:ro" \
     -v "${2}:/target" \
-    node:24-slim sh -ceu 'cp -a /source/. /target/'
+    "${VOLUME_COPY_IMAGE}" sh -ceu 'cp -a /source/. /target/'
 }
 
 current_revision() { # <host-port>
@@ -108,16 +109,19 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../../.."
 if [ -z "${BASE_IMAGE}" ]; then
   BASE_IMAGE="${IMAGE_TAG}-base"
   echo ">> building baseline ${BASE_IMAGE} from ${BASE_REF}"
-  git archive --format=tar "${BASE_REF}" | docker build -t "${BASE_IMAGE}" -f apps/mailbox/Dockerfile -
+  git archive --format=tar "${BASE_REF}" | docker build --quiet -t "${BASE_IMAGE}" -f apps/mailbox/Dockerfile -
   BUILT_BASE_IMAGE=true
 elif ! docker image inspect "${BASE_IMAGE}" >/dev/null 2>&1; then
   echo ">> pulling baseline ${BASE_IMAGE}"
-  docker pull "${BASE_IMAGE}" >/dev/null
+  docker pull --quiet "${BASE_IMAGE}"
 fi
 
 echo ">> building ${UPGRADE_IMAGE}"
-docker build -t "${UPGRADE_IMAGE}" .
+docker build --quiet -t "${UPGRADE_IMAGE}" .
 BUILT_IMAGE=true
+
+echo ">> preparing volume-copy helper"
+docker pull --quiet "${VOLUME_COPY_IMAGE}"
 
 if [ "$(docker image inspect --format '{{.Id}}' "${BASE_IMAGE}")" = "$(docker image inspect --format '{{.Id}}' "${UPGRADE_IMAGE}")" ]; then
   echo "baseline and upgrade images must differ; choose a different BASE_IMAGE or BASE_REF" >&2
