@@ -37,6 +37,15 @@ test('keeps normal mode content-only while retaining local recovery controls', (
   assert.match(renderer, /<button\b[^>]*\bid=["']quit-overlay["']/);
 });
 
+test('makes recovery movement and resizing visible and local-only', () => {
+  assert.match(renderer, /<div\b[^>]*\bid=["']recovery-drag-handle["']/);
+  assert.match(renderer, /Drag here to move overlay/);
+  assert.match(renderer, /<div\b[^>]*\bid=["']recovery-resize-grip["']/);
+  assert.match(renderer, /Drag corner to resize/);
+  assert.match(app, /window\.overlay\.resize\.begin\(\)/);
+  assert.match(app, /window\.overlay\.resize\.update\(/);
+});
+
 test('offers a first-run enrollment form and a pairing/retarget status view', () => {
   assert.match(renderer, /<input\b[^>]*\bid=["']mailbox-url["']/);
   assert.match(renderer, /<input\b[^>]*\bid=["']client-name["']/);

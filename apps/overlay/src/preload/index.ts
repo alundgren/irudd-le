@@ -19,6 +19,12 @@ const api: OverlayApi = {
 
   toggleInteractive: () => ipcRenderer.invoke('overlay:toggle-interactive'),
 
+  resize: {
+    begin: () => ipcRenderer.invoke('overlay:begin-resize'),
+    update: (delta) => ipcRenderer.send('overlay:resize', delta),
+    end: () => ipcRenderer.send('overlay:end-resize'),
+  },
+
   quit: () => ipcRenderer.send('overlay:quit'),
 
   /**

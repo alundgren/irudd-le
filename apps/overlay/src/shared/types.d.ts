@@ -116,6 +116,11 @@ interface OverlayApi {
   getState(): Promise<OverlayInfo | null>;
   setInteractive(interactive: boolean): Promise<OverlayState | null>;
   toggleInteractive(): Promise<OverlayState | null>;
+  resize: {
+    begin(): Promise<boolean>;
+    update(delta: { width: number; height: number }): void;
+    end(): void;
+  };
   quit(): void;
   /** Returns an unsubscribe function. */
   onModeChanged(handler: (state: OverlayState) => void): () => void;

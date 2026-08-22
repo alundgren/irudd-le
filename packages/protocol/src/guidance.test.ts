@@ -57,6 +57,15 @@ test('the guide quotes contract limits from the contract itself', () => {
   assert.ok(text.includes(String(REVISION_DESCRIPTION_MAX_LENGTH)), 'guide never states the description limit');
 });
 
+test('the guide states the CSS-pixel to physical-pixel scale contract', () => {
+  const profile = PUBLISHING_GUIDE.sections.find((section) => section.id === 'target-profile');
+  const text = profile?.body.join(' ') ?? '';
+
+  assert.match(text, /CSS pixels/);
+  assert.match(text, /physical pixels/);
+  assert.match(text, /contentBox.*devicePixelRatio/);
+});
+
 test('the example workflow threads the uploaded asset id into the publication', () => {
   const [, upload, publish] = PUBLISHING_GUIDE.exampleWorkflow;
 

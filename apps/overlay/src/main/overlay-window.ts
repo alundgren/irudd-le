@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { BrowserWindow, screen } from 'electron';
 import { config } from './config';
+import { loadOverlayBounds, persistOverlayBounds } from './window-state';
 
 const RENDERER_HTML = path.join(__dirname, '..', 'renderer', 'index.html');
 const PRELOAD = path.join(__dirname, '..', 'preload', 'index.js');
@@ -42,16 +43,19 @@ export function cornerPosition(size: {
  * Deliberately a plain OS window drawn above the game -- no hooking, no
  * injection, no reading game memory. See README "Non-goals".
  */
-export function createOverlayWindow(): BrowserWindow {
-  const { width, height, resizable } = config.window;
-  const { x, y } = cornerPosition({ width, height });
+export function createOverlayWindow(userDataDir: string): BrowserWindow {
+  const { width, height, minimumWidth, minimumHeight, resizable } = config.window;
+  const restored = loadOverlayBounds(userDataDir, { width: minimumWidth, height: minimumHeight });
+  const { x, y } = restored ?? cornerPosition({ width, height });
 
   const win = new BrowserWindow({
-    width,
-    height,
+    width: restored?.width ?? width,
+    height: restored?.height ?? height,
     x,
     y,
     resizable,
+    minWidth: minimumWidth,
+    minHeight: minimumHeight,
     transparent: true,
     frame: false,
     hasShadow: false,
@@ -96,6 +100,7 @@ export function createOverlayWindow(): BrowserWindow {
 
   // External links would open inside the overlay otherwise.
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  persistOverlayBounds(userDataDir, win);
 
   return win;
 }

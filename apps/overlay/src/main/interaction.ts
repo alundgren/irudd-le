@@ -1,4 +1,6 @@
-import type { BrowserWindow } from 'electron';
+import { screen, type BrowserWindow } from 'electron';
+import { config } from './config';
+import { resizeWithinWorkArea } from './window-state';
 
 /**
  * Owns the one piece of state that matters in v1: is the overlay currently
@@ -13,6 +15,7 @@ import type { BrowserWindow } from 'electron';
 export class InteractionMode {
   private readonly win: BrowserWindow;
   private interactive: boolean;
+  private resizeStart: { width: number; height: number } | null = null;
 
   constructor(win: BrowserWindow, startInteractive = false) {
     this.win = win;
@@ -25,6 +28,7 @@ export class InteractionMode {
   apply(interactive: boolean): boolean {
     if (this.interactive === interactive) return this.interactive;
     this.interactive = interactive;
+    if (!interactive) this.resizeStart = null;
 
     if (interactive) {
       this.win.setIgnoreMouseEvents(false);
@@ -45,6 +49,29 @@ export class InteractionMode {
     return this.apply(!this.interactive);
   }
 
+  /** A recovery-only gesture. The renderer supplies a delta, never bounds. */
+  beginResize(): boolean {
+    if (!this.interactive) return false;
+    const { width, height } = this.win.getBounds();
+    this.resizeStart = { width, height };
+    return true;
+  }
+
+  resize(delta: unknown): void {
+    if (!this.resizeStart || !this.interactive || !isResizeDelta(delta)) return;
+    const bounds = this.win.getBounds();
+    const area = screen.getDisplayMatching(bounds).workArea;
+    const size = resizeWithinWorkArea(bounds, this.resizeStart, delta, area, {
+      width: config.window.minimumWidth,
+      height: config.window.minimumHeight,
+    });
+    this.win.setSize(size.width, size.height);
+  }
+
+  endResize(): void {
+    this.resizeStart = null;
+  }
+
   broadcast(): void {
     if (this.win.isDestroyed()) return;
     this.win.webContents.send('overlay:mode-changed', this.state());
@@ -53,4 +80,12 @@ export class InteractionMode {
   state(): OverlayState {
     return { interactive: this.interactive };
   }
+}
+
+function isResizeDelta(value: unknown): value is { width: number; height: number } {
+  if (!value || typeof value !== 'object') return false;
+  const delta = value as Record<string, unknown>;
+  return ['width', 'height'].every((key) =>
+    typeof delta[key] === 'number' && Number.isFinite(delta[key]) && Math.abs(delta[key]) <= 4096
+  );
 }

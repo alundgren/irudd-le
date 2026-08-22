@@ -29,13 +29,14 @@ body {
    OS window out of click-through before this becomes usable. */
 #local-setup {
   position: fixed;
-  inset: 12px;
+  inset: 3px;
   display: none;
   flex-direction: column;
   justify-content: center;
   gap: 12px;
   overflow: auto;
   padding: 18px;
+  padding-bottom: 58px;
   border: 1px solid #d69a2d;
   border-radius: 8px;
   background: rgba(18, 16, 12, 0.96);
@@ -97,6 +98,35 @@ body[data-mode='interactive'] #local-setup:not([hidden]) {
   cursor: pointer;
   font: inherit;
 }
+
+#recovery-drag-handle {
+  margin: -10px -10px 0;
+  padding: 10px;
+  border-bottom: 1px solid #6b5527;
+  color: #f5ead7;
+  cursor: move;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+#recovery-resize-grip {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  min-width: 160px;
+  min-height: 36px;
+  padding: 8px;
+  border: 2px solid #d69a2d;
+  border-radius: 4px;
+  background: #322312;
+  color: inherit;
+  cursor: nwse-resize;
+  font-weight: 600;
+  text-align: center;
+  touch-action: none;
+  user-select: none;
+}
+
 
 #overflow-warning {
   position: fixed;
