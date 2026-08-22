@@ -4,25 +4,20 @@
 // installing is "unzip into the install root" and nothing else -- see
 // docs/adr/0002-versioned-folders-and-self-update.md.
 //
-// We package a staging directory rather than the repo root. The app has no
-// runtime dependencies (everything in package.json is a devDependency), so the
-// staging dir is just build/ plus a trimmed package.json. That keeps
-// @electron/packager away from node_modules entirely: no ignore patterns to
-// keep in sync, no pruning, and pnpm's symlinked layout never enters the
-// picture.
+// We package a staging directory rather than the repo root; stage-app.mjs
+// builds it and explains why.
 
-import { rm, mkdir, cp, writeFile, rename, readFile } from 'node:fs/promises';
+import { rm, cp, rename, readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { packager } from '@electron/packager';
+import { stageApp } from './stage-app.mjs';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dist = path.join(appRoot, 'dist');
 const staging = path.join(dist, 'staging');
 const out = path.join(dist, 'out');
-
-const pkg = JSON.parse(await readFile(path.join(appRoot, 'package.json'), 'utf8'));
 
 // Packager reads the Electron version from the packaged dir's devDependencies,
 // and the staging dir deliberately has none. Take it from what is installed.
@@ -30,35 +25,11 @@ const electronPkg = JSON.parse(
   await readFile(path.join(appRoot, 'node_modules', 'electron', 'package.json'), 'utf8')
 );
 
+await rm(dist, { recursive: true, force: true });
+
+const pkg = await stageApp({ appRoot, staging });
 const version = pkg.version;
 const zipName = `last-epoch-overlay-${version}-win32-x64.zip`;
-
-await rm(dist, { recursive: true, force: true });
-await mkdir(staging, { recursive: true });
-
-// Excludes compiled `*.test.js` (src/main/*.test.ts) -- test.ts files live
-// alongside the modules they cover so tsc compiles them into build/main/
-// too, but they have no reason to ship inside a released version folder.
-await cp(path.join(appRoot, 'build'), path.join(staging, 'build'), {
-  recursive: true,
-  filter: (source) => !source.endsWith('.test.js'),
-});
-await writeFile(
-  path.join(staging, 'package.json'),
-  JSON.stringify(
-    {
-      name: pkg.name,
-      productName: 'Last Epoch Overlay',
-      version,
-      description: pkg.description,
-      main: pkg.main,
-      author: pkg.author,
-      license: pkg.license,
-    },
-    null,
-    2
-  ) + '\n'
-);
 
 const [built] = await packager({
   dir: staging,
