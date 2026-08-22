@@ -70,6 +70,39 @@ finding one downloads it, checks its SHA-256, and restarts into the new
 version folder. No existing folder is ever overwritten, so rolling back means
 deleting one.
 
+## Enrolling a Tailnet PC
+
+The overlay itself performs its first registration so it can report the real
+display profile; an agent cannot enroll a device on its behalf.
+
+1. Confirm the Windows PC can reach the Pi over the Tailnet:
+
+   ```powershell
+   Test-NetConnection raspberrypi -Port 8089
+   Test-NetConnection raspberrypi -Port 8090
+   ```
+
+2. Start the overlay and, in **Local setup**, enter `http://raspberrypi:8089`
+   as the mailbox URL and a recognisable client name such as `gaming-pc`.
+3. Press **Enroll** and keep the overlay open. It shows a six-digit pairing
+   code, valid for ten minutes.
+4. On the Mac running Codex, add the private MCP endpoint and start a fresh
+   Codex session:
+
+   ```sh
+   codex mcp add irudd-le --url http://raspberrypi:8090/mcp
+   codex mcp list
+   ```
+
+5. Give the pairing code to the agent and explicitly confirm pairing. The
+   agent pairs the pending target to a new channel, then should preview a
+   revision before publishing it. Confirm the target's render status is
+   `active` with both overflow flags `false`.
+
+For local recovery, `Alt+Shift+O` toggles the overlay between click-through
+and interactive mode. In interactive mode, drag an outer edge or corner to
+resize. The current frameless overlay has no dedicated move shortcut.
+
 ## Product direction
 
 One live overlay target belongs to a named channel. On enrollment, the target
