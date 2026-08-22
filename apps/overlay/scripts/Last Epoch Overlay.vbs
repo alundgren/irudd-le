@@ -71,13 +71,49 @@ Function CompareVersions(left, right)
   CompareVersions = 0
 End Function
 
+' Waits for the retiring overlay to go away before the new one starts.
+'
+' Every WMI failure here falls back to a fixed grace period instead of stopping
+' the script: an update that cannot poll is still an update, and leaving the
+' user with no overlay -- and a Windows Script Host error dialog -- is worse
+' than starting a moment early.
 Sub WaitForExit(processId)
-  Dim processes
-  Do
-    Set processes = GetObject("winmgmts:root\\cimv2").ExecQuery("SELECT ProcessId FROM Win32_Process WHERE ProcessId = " & processId)
-    If processes.Count = 0 Then Exit Do
-    WScript.Sleep 250
+  Const POLL_MS = 250
+  Const TIMEOUT_MS = 30000
+  Const GRACE_MS = 3000
+
+  Dim cimv2, processes, waited
+
+  On Error Resume Next
+
+  ' VBScript has no backslash escape, so this moniker must be written exactly
+  ' as WMI reads it. A doubled separator leaves an empty namespace segment and
+  ' fails with 0x80041021 (WBEM_E_INVALID_SYNTAX).
+  Set cimv2 = GetObject("winmgmts:\\.\root\cimv2")
+  If Err.Number <> 0 Then
+    Err.Clear
+    On Error GoTo 0
+    WScript.Sleep GRACE_MS
+    Exit Sub
+  End If
+
+  waited = 0
+  Do While waited < TIMEOUT_MS
+    Set processes = cimv2.ExecQuery("SELECT ProcessId FROM Win32_Process WHERE ProcessId = " & processId)
+    If Err.Number <> 0 Then
+      Err.Clear
+      On Error GoTo 0
+      WScript.Sleep GRACE_MS
+      Exit Sub
+    End If
+
+    If processes.Count = 0 Then Exit Sub
+
+    WScript.Sleep POLL_MS
+    waited = waited + POLL_MS
   Loop
+
+  On Error GoTo 0
 End Sub
 
 Function Quote(value)
