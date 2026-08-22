@@ -52,6 +52,24 @@ stable `Last Epoch Overlay.vbs` launcher plus an immutable version folder; see
 [ADR-0002](docs/adr/0002-versioned-folders-and-self-update.md). Release only
 through the repository’s `release-overlay` workflow.
 
+## Installing on Windows
+
+1. Download `last-epoch-overlay-<version>-win32-x64.zip` from the
+   [latest release](https://github.com/alundgren/irudd-le/releases/latest).
+2. Unzip it into an install root, keeping `Last Epoch Overlay.vbs` next to the
+   version folder it ships with.
+3. Run `Last Epoch Overlay.vbs`. It launches through `wscript.exe`, so no
+   console window opens, and it starts whichever version folder is newest.
+4. Releases are unsigned, so SmartScreen will warn on first run. Choose "More
+   info", then "Run anyway".
+5. Pin `Last Epoch Overlay.vbs` to the taskbar. That shortcut keeps working
+   across every future update.
+
+Updates after that are unattended: the overlay polls for a new release, and on
+finding one downloads it, checks its SHA-256, and restarts into the new
+version folder. No existing folder is ever overwritten, so rolling back means
+deleting one.
+
 ## Product direction
 
 One live overlay target belongs to a named channel. On enrollment, the target
