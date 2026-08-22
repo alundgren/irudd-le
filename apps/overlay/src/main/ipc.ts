@@ -58,6 +58,21 @@ export function registerIpc({
     return mode.state();
   });
 
+  ipcMain.handle('overlay:begin-resize', (event): boolean => {
+    if (!fromOverlay(event)) return false;
+    return mode.beginResize();
+  });
+
+  ipcMain.on('overlay:resize', (event, delta: unknown) => {
+    if (!fromOverlay(event)) return;
+    mode.resize(delta);
+  });
+
+  ipcMain.on('overlay:end-resize', (event) => {
+    if (!fromOverlay(event)) return;
+    mode.endResize();
+  });
+
   ipcMain.on('overlay:quit', (event) => {
     if (!fromOverlay(event)) return;
     app.quit();

@@ -13,7 +13,7 @@ import {
  * using it improves, and a clarified sentence must not look like a breaking
  * protocol change.
  */
-export const PUBLISHING_GUIDE_VERSION = 1;
+export const PUBLISHING_GUIDE_VERSION = 2;
 
 export interface PublishingGuideSection {
   id: string;
@@ -94,7 +94,7 @@ export const PUBLISHING_GUIDE: PublishingGuide = {
       title: 'Inspect the target profile before writing HTML',
       body: [
         'The target profile is the layout budget, and it is locked per publication. Read it first rather than guessing at a size.',
-        'contentBox width and height are the hard pixel budget: content that exceeds it overflows. devicePixelRatio tells you how the box maps to physical pixels, so size images against it. minimumTextSize is the smallest legible size at couch distance, where the reader cannot lean in. preferredIconSize gives the min/max icon edge the target wants. background.opaque says whether you can rely on a solid backdrop or must stay readable over the game. features lists optional capabilities; assume nothing that is not listed.',
+        'contentBox width and height are the hard CSS-pixel budget: content that exceeds it overflows. Electron BrowserWindow bounds use device-independent pixels, and the renderer reports the same content box in CSS pixels. devicePixelRatio maps that box to physical pixels. screenshot width is round(contentBox.width × devicePixelRatio), and screenshot height uses the same calculation. Use CSS dimensions that fit contentBox; multiply by devicePixelRatio only when you need the physical-pixel capacity. minimumTextSize is the smallest legible size at couch distance, where the reader cannot lean in. preferredIconSize gives the min/max icon edge the target wants. background.opaque says whether you can rely on a solid backdrop or must stay readable over the game. features lists optional capabilities; assume nothing that is not listed.',
         'The profile carries a version. A publication is validated against one profile version, so inspect again after the target reports a changed profile.',
       ],
     },

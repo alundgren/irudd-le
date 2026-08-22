@@ -162,8 +162,11 @@ export const channelListSchema = schema<ChannelList>((value) => {
 
 export interface TargetProfile {
   version: number;
+  /** The content iframe's measured layout viewport in CSS pixels. */
   contentBox: { width: number; height: number };
+  /** CSS pixels multiplied by this value give the physical-pixel capacity. */
   devicePixelRatio: number;
+  /** Physical-pixel capacity, reported as round(contentBox * devicePixelRatio). */
   screenshot: { width: number; height: number };
   preferredIconSize: { min: number; max: number };
   minimumTextSize: number;

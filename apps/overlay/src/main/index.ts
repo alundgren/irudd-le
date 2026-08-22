@@ -76,7 +76,7 @@ app.whenReady().then(() => {
     void app.dock?.hide();
   }
 
-  win = createOverlayWindow();
+  win = createOverlayWindow(app.getPath('userData'));
   mode = new InteractionMode(win, startInteractive);
   updater = new UpdateManager(win);
   enrollment = new EnrollmentManager(win, app.getPath('userData'));

@@ -13,6 +13,7 @@ function must<T extends HTMLElement>(id: string): T {
 const setup = must<HTMLElement>('local-setup');
 const resume = must<HTMLButtonElement>('resume-content');
 const quit = must<HTMLButtonElement>('quit-overlay');
+const resizeGrip = must<HTMLElement>('recovery-resize-grip');
 
 function applyMode(state: OverlayState): void {
   document.body.dataset.mode = state.interactive ? 'interactive' : 'click-through';
@@ -25,6 +26,41 @@ resume.addEventListener('click', () => {
 
 quit.addEventListener('click', () => {
   window.overlay.quit();
+});
+
+resizeGrip.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) return;
+  const startX = event.clientX;
+  const startY = event.clientY;
+  let active = true;
+  let began = false;
+  const update = (move: PointerEvent): void => {
+    if (move.pointerId !== event.pointerId) return;
+    window.overlay.resize.update({ width: move.clientX - startX, height: move.clientY - startY });
+  };
+  const end = (finish: PointerEvent): void => {
+    if (finish.pointerId !== event.pointerId || !active) return;
+    active = false;
+    window.removeEventListener('pointermove', update);
+    window.removeEventListener('pointerup', end);
+    window.removeEventListener('pointercancel', end);
+    if (began) window.overlay.resize.end();
+  };
+  window.addEventListener('pointermove', update);
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
+  void window.overlay.resize.begin().then((accepted) => {
+    if (!accepted) {
+      active = false;
+      return;
+    }
+    began = true;
+    if (!active) {
+      window.overlay.resize.end();
+      return;
+    }
+    resizeGrip.setPointerCapture(event.pointerId);
+  });
 });
 
 window.overlay.onModeChanged(applyMode);

@@ -12,6 +12,8 @@ export interface OverlayConfig {
   window: {
     width: number;
     height: number;
+    minimumWidth: number;
+    minimumHeight: number;
     corner: Corner;
     /** Gap in pixels between the overlay and the screen edges. */
     margin: number;
@@ -47,6 +49,8 @@ export const config: OverlayConfig = {
   window: {
     width: 360,
     height: 480,
+    minimumWidth: 240,
+    minimumHeight: 180,
     corner: 'top-right',
     margin: 16,
     resizable: true,
